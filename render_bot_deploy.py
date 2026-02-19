@@ -1126,13 +1126,11 @@ def start_background_loop():
     loop.run_until_complete(auto_signal_worker())
 
 
-# Запускаем фоновую задачу в отдельном демоническом потоке (только один раз)
-global background_thread_started
-if not background_thread_started:
-    background_thread_started = True
-    thread = threading.Thread(target=start_background_loop, daemon=True)
-    thread.start()
-    logger.info("✅ Фоновый поток для автосигналов запущен")
+# Запускаем фоновую задачу в отдельном демоническом потоке
+# Поток будет запущен только один раз при старте приложения
+thread = threading.Thread(target=start_background_loop, daemon=True)
+thread.start()
+logger.info("✅ Фоновый поток для автосигналов запущен")
 
 # ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
