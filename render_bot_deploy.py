@@ -116,8 +116,11 @@ class EURUSDProBot:
 
         # === 1. RSI (Relative Strength Index) ===
         try:
-            rsi = talib.RSI(close, timeperiod=self.settings['rsi_period'])
-            results['rsi'] = rsi[-1]
+            # Преобразуем массив close в pandas Series для pandas-ta
+            close_series = pd.Series(close)
+            rsi_series = ta.rsi(close_series, length=self.settings['rsi_period'])
+            # Берем последнее значение (оно может быть NaN, если данных мало)
+            results['rsi'] = rsi_series.iloc[-1] if not rsi_series.isna().all() else 50
             if results['rsi'] > self.settings['rsi_overbought']:
                 results['rsi_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (сигнал к продаже)'
             elif results['rsi'] < self.settings['rsi_oversold']:
@@ -132,15 +135,16 @@ class EURUSDProBot:
 
         # === 2. MACD ===
         try:
-            macd, macd_signal, macd_hist = talib.MACD(
-                close,
-                fastperiod=self.settings['macd_fast'],
-                slowperiod=self.settings['macd_slow'],
-                signalperiod=self.settings['macd_signal']
+            macd_result = ta.macd(
+                pd.Series(close),
+                fast=self.settings['macd_fast'],
+                slow=self.settings['macd_slow'],
+                signal=self.settings['macd_signal']
             )
-            results['macd'] = macd[-1]
-            results['macd_signal'] = macd_signal[-1]
-            results['macd_hist'] = macd_hist[-1]
+            # pandas-ta возвращает DataFrame с колонками
+            results['macd'] = macd_result.iloc[-1, 0]  # первая колонка - MACD
+            results['macd_signal'] = macd_result.iloc[-1, 1]  # вторая - сигнальная
+            results['macd_hist'] = macd_result.iloc[-1, 2]  # третья - гистограмма
 
             if macd[-1] > macd_signal[-1] and macd_hist[-1] > 0:
                 results['macd_trend'] = 'БЫЧИЙ СИГНАЛ'
@@ -160,16 +164,15 @@ class EURUSDProBot:
 
         # === 3. Полосы Боллинджера ===
         try:
-            upper, middle, lower = talib.BBANDS(
-                close,
-                timeperiod=self.settings['bb_period'],
-                nbdevup=self.settings['bb_std'],
-                nbdevdn=self.settings['bb_std']
+            bb_result = ta.bbands(
+                pd.Series(close),
+                length=self.settings['bb_period'],
+                std=self.settings['bb_std']
             )
-            results['bb_upper'] = upper[-1]
-            results['bb_middle'] = middle[-1]
-            results['bb_lower'] = lower[-1]
-            results['bb_width'] = ((upper[-1] - lower[-1]) / middle[-1]) * 100
+            # pandas-ta возвращает DataFrame с колонками
+            results['bb_upper'] = bb_result.iloc[-1, 0]  # верхняя полоса
+            results['bb_middle'] = bb_result.iloc[-1, 1]  # средняя полоса
+            results['bb_lower'] = bb_result.iloc[-1, 2]  # нижняя полоса
 
             # Позиция цены относительно полос
             if current_price >= upper[-1]:
@@ -196,8 +199,8 @@ class EURUSDProBot:
         results['sma'] = {}
         for period in self.settings['sma_periods']:
             try:
-                sma = talib.SMA(close, timeperiod=period)
-                results['sma'][period] = sma[-1]
+                sma_series = ta.sma(pd.Series(close), length=period)
+                results['sma'][period] = sma_series.iloc[-1] if not sma_series.isna().all() else close[-1]
                 if current_price > sma[-1]:
                     results[f'sma_{period}_signal'] = '⬆️ ВЫШЕ'
                 elif current_price < sma[-1]:
@@ -211,8 +214,8 @@ class EURUSDProBot:
         results['ema'] = {}
         for period in self.settings['ema_periods']:
             try:
-                ema = talib.EMA(close, timeperiod=period)
-                results['ema'][period] = ema[-1]
+                ema_series = ta.ema(pd.Series(close), length=period)
+                results['ema'][period] = ema_series.iloc[-1] if not ema_series.isna().all() else close[-1]
                 if current_price > ema[-1]:
                     results[f'ema_{period}_signal'] = '⬆️ ВЫШЕ'
                 elif current_price < ema[-1]:
