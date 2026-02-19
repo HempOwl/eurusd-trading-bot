@@ -5,7 +5,6 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import os
 import pandas as pd
 import numpy as np
@@ -169,8 +168,6 @@ class EURUSDProBot:
         ema_slow = self._ema(data, slow)
         macd_line = ema_fast - ema_slow
 
-        # Для сигнальной линии нужна EMA от MACD за signal период.
-        # Упрощённо: вернём только линию
         return macd_line, 0.0, 0.0
 
     # ---------- Основной расчёт индикаторов ----------
@@ -693,7 +690,7 @@ async def send_help_trading(bot_instance, chat_id):
 1. Получите сигнал через кнопку 📊
 2. Проанализируйте вероятности
 3. Если уверенность >60% - можно входить
-4. Ставка: не более 0.25% - 0.5% от депозита
+4. Ставка: не более 3% от депозита
 5. Время экспирации: 3 минуты
 
 Правила риск-менеджмента:
@@ -721,7 +718,7 @@ async def send_help_faq(bot_instance, chat_id):
 По запросу через команду /signal
 
 ❓ Почему нет сигнала?
-Проверьте API ключ Twelve Data
+Проверьте API ключ Twelve Data в настройках Render
 
 ❓ Какой таймфрейм используется?
 1 минута (M1)
@@ -730,7 +727,7 @@ async def send_help_faq(bot_instance, chat_id):
 Сигналы основаны на техническом анализе, но не гарантируют прибыль. Всегда используйте риск-менеджмент.
 
 ❓ Бот работает 24/7?
-Да, бот запущен и работает круглосуточно
+Да, бот запущен на Render.com и работает круглосуточно
     """
 
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
@@ -859,25 +856,19 @@ def webhook():
 
             # Обработка callback-запросов от кнопок
             if 'callback_query' in update_data:
-                # Для кнопок создаём специальный объект
                 class CallbackQuery:
                     def __init__(self, data):
                         self.data = data
+                        self.answer = lambda: None
 
-                    class CallbackQuery:
-                        def __init__(self, data):
-                            self.data = data
-                            self.answer = lambda: None  # заглушка
+                class Update:
+                    def __init__(self, data):
+                        self.callback_query = CallbackQuery(data['callback_query']['data'])
 
-                    class Update:
-                        def __init__(self, data):
-                            self.callback_query = CallbackQuery(data['callback_query']['data'])
-
-                    update = Update(update_data)
-                    chat_id = update_data['callback_query']['from']['id']
-                    loop.run_until_complete(handle_message(chat_id, None, update))
-
-                elif 'message' in update_data and 'text' in update_data['message']:
+                update = Update(update_data)
+                chat_id = update_data['callback_query']['from']['id']
+                loop.run_until_complete(handle_message(chat_id, None, update))
+            elif 'message' in update_data and 'text' in update_data['message']:
                 chat_id = update_data['message']['chat']['id']
                 text = update_data['message']['text']
                 loop.run_until_complete(handle_message(chat_id, text))
@@ -958,17 +949,17 @@ async def handle_message(chat_id, text=None, update=None):
 async def send_welcome(bot_instance, chat_id):
     """Отправка приветствия с меню"""
     welcome_text = """
-    🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
+🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
 
-    Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
+Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
 
-    📊 *Доступные функции:*
-    • Получение сигналов с анализом
-    • Статус и настройки бота
-    • Подробная помощь по индикаторам
+📊 *Доступные функции:*
+• Получение сигналов с анализом
+• Статус и настройки бота
+• Подробная помощь по индикаторам
 
-    *Бот работает 24/7 на Render.com!*
-        """
+*Бот работает 24/7 на Render.com!*
+    """
 
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -1011,20 +1002,20 @@ async def send_signal(bot_instance, chat_id):
 async def send_status(bot_instance, chat_id):
     """Статус бота"""
     status_text = f"""
-    📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
+📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
 
-    ✅ Бот работает 24/7
-    📈 Упрощённые индикаторы активны
-    💹 Последний сигнал: {'есть' if bot.last_signal else 'нет'}
-    ⏰ Время сервера: {datetime.now().strftime('%H:%M:%S')}
+✅ Бот работает 24/7 на Render.com
+📈 Упрощённые индикаторы активны
+💹 Последний сигнал: {'есть' if bot.last_signal else 'нет'}
+⏰ Время сервера: {datetime.now().strftime('%H:%M:%S')}
 
-    *Настройки индикаторов:*
-    • RSI период: {bot.settings['rsi_period']}
-    • MACD: {bot.settings['macd_fast']}/{bot.settings['macd_slow']}/{bot.settings['macd_signal']}
-    • Полосы Боллинджера: {bot.settings['bb_period']} период, {bot.settings['bb_std']} std
-    • SMA периоды: {bot.settings['sma_periods']}
-    • EMA периоды: {bot.settings['ema_periods']}
-        """
+*Настройки индикаторов:*
+• RSI период: {bot.settings['rsi_period']}
+• MACD: {bot.settings['macd_fast']}/{bot.settings['macd_slow']}/{bot.settings['macd_signal']}
+• Полосы Боллинджера: {bot.settings['bb_period']} период, {bot.settings['bb_std']} std
+• SMA периоды: {bot.settings['sma_periods']}
+• EMA периоды: {bot.settings['ema_periods']}
+    """
     await bot_instance.send_message(
         chat_id=chat_id,
         text=status_text,
