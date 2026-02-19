@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: eurusd-trading-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn render_bot_deploy:app
+    envVars:
+      - key: 8330877438:AAGqvHO3_2UnvhjEeyoerPHl0nFXSJl4D5w
+        sync: false
+      - key: 9ce2fd5a35294f9b9f5c3d9f63d48da3
+        sync: false
