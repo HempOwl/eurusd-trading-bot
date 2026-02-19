@@ -9,19 +9,43 @@ import os
 import pandas as pd
 import numpy as np
 import threading
-import time
 
-# Настройка логирования
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Создаём Flask приложение
+# ========== ФАЙЛ ДЛЯ ХРАНЕНИЯ ПОДПИСЧИКОВ ==========
+SUBSCRIBERS_FILE = "subscribers.json"
+
+
+def load_subscribers():
+    """Загружает список подписчиков из файла"""
+    if os.path.exists(SUBSCRIBERS_FILE):
+        try:
+            with open(SUBSCRIBERS_FILE, 'r') as f:
+                data = json.load(f)
+                return set(data)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки подписчиков: {e}")
+            return set()
+    return set()
+
+
+def save_subscribers(subscribers_set):
+    """Сохраняет список подписчиков в файл"""
+    try:
+        with open(SUBSCRIBERS_FILE, 'w') as f:
+            json.dump(list(subscribers_set), f)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения подписчиков: {e}")
+
+
+# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
 app = Flask(__name__)
 
-# Токен из переменных окружения
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
 
@@ -30,14 +54,12 @@ if not BOT_TOKEN:
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 
-# Множество подписчиков на автосигналы (храним chat_id)
-subscribers = set()
+# Множество подписчиков (загружается из файла)
+subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
 
-# Флаг, чтобы фоновый поток запускался только один раз
-background_thread_started = False
 
-
+# ========== ОСНОВНОЙ КЛАСС БОТА ==========
 class EURUSDProBot:
     """Профессиональный бот с упрощёнными индикаторами для Render"""
 
@@ -90,7 +112,6 @@ class EURUSDProBot:
         if not candles:
             return
 
-        # Создаем DataFrame
         df = pd.DataFrame(candles)
         df = df.rename(columns={
             'open': 'Open',
@@ -99,28 +120,22 @@ class EURUSDProBot:
             'close': 'Close'
         })
 
-        # Конвертируем в числовые значения
         for col in ['Open', 'High', 'Low', 'Close']:
             df[col] = pd.to_numeric(df[col])
 
-        # Меняем порядок на хронологический (от старых к новым)
         df = df.iloc[::-1].reset_index(drop=True)
-
         self.df = df
         logger.info(f"✅ Загружено {len(df)} свечей")
 
     # ---------- Вспомогательные функции для индикаторов ----------
     def _sma(self, data, period):
-        """Простое скользящее среднее"""
         if len(data) < period:
             return data[-1]
         return sum(data[-period:]) / period
 
     def _ema(self, data, period):
-        """Экспоненциальное скользящее среднее (упрощённо)"""
         if len(data) < period:
             return data[-1]
-        # Начинаем с SMA
         ema = sum(data[-period:]) / period
         multiplier = 2 / (period + 1)
         for price in data[-period + 1:]:
@@ -128,12 +143,10 @@ class EURUSDProBot:
         return ema
 
     def _rsi(self, data, period=14):
-        """Расчёт RSI"""
         if len(data) < period + 1:
             return 50.0
 
-        gains = []
-        losses = []
+        gains, losses = [], []
         for i in range(1, period + 1):
             change = data[-i] - data[-i - 1]
             if change > 0:
@@ -149,11 +162,9 @@ class EURUSDProBot:
         if avg_loss == 0:
             return 100.0
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return 100 - (100 / (1 + rs))
 
     def _bbands(self, data, period=20, std_dev=2):
-        """Полосы Боллинджера (возвращает upper, middle, lower)"""
         if len(data) < period:
             middle = data[-1]
             upper = middle * 1.02
@@ -168,22 +179,16 @@ class EURUSDProBot:
         return upper, middle, lower
 
     def _macd(self, data, fast=12, slow=26, signal=9):
-        """MACD линия, сигнальная линия, гистограмма (упрощённо)"""
         if len(data) < slow + signal:
             return 0.0, 0.0, 0.0
 
-        # Рассчитываем EMA для fast и slow
         ema_fast = self._ema(data, fast)
         ema_slow = self._ema(data, slow)
         macd_line = ema_fast - ema_slow
-
-        # Для сигнальной линии нужна EMA от MACD за signal период.
-        # Упрощённо: вернём только линию
         return macd_line, 0.0, 0.0
 
     # ---------- Основной расчёт индикаторов ----------
     def calculate_indicators(self):
-        """Расчёт упрощённых индикаторов без внешних библиотек"""
         if self.df is None or len(self.df) < 50:
             return None
 
@@ -210,7 +215,7 @@ class EURUSDProBot:
             results['rsi'] = 50.0
             results['rsi_signal'] = 'НЕЙТРАЛЬНО'
 
-        # 2. MACD (упрощённо)
+        # 2. MACD
         try:
             macd_line, macd_signal_line, macd_hist = self._macd(
                 close,
@@ -265,7 +270,7 @@ class EURUSDProBot:
             results['bb_position'] = 'СРЕДИНА'
             results['bb_signal'] = 'НЕЙТРАЛЬНО'
 
-        # 4. Скользящие средние (SMA)
+        # 4. SMA
         results['sma'] = {}
         for period in self.settings['sma_periods']:
             try:
@@ -281,7 +286,7 @@ class EURUSDProBot:
                 results['sma'][period] = current_price
                 results[f'sma_{period}_signal'] = '⏺️ ОКОЛО'
 
-        # 5. Скользящие средние (EMA)
+        # 5. EMA
         results['ema'] = {}
         for period in self.settings['ema_periods']:
             try:
@@ -322,37 +327,26 @@ class EURUSDProBot:
         return results
 
     def find_support_resistance(self, high, low, close, window=5):
-        """Поиск уровней поддержки и сопротивления"""
-        supports = []
-        resistances = []
-
-        # Ищем локальные минимумы (поддержка)
+        supports, resistances = [], []
         for i in range(window, len(close) - window):
             if all(low[i] <= low[i - j] for j in range(1, window + 1)) and \
                     all(low[i] <= low[i + j] for j in range(1, window + 1)):
                 supports.append(low[i])
-
-        # Ищем локальные максимумы (сопротивление)
-        for i in range(window, len(close) - window):
             if all(high[i] >= high[i - j] for j in range(1, window + 1)) and \
                     all(high[i] >= high[i + j] for j in range(1, window + 1)):
                 resistances.append(high[i])
 
-        # Группируем близкие уровни
         supports = self.cluster_levels(supports)
         resistances = self.cluster_levels(resistances)
-
         supports.sort()
         resistances.sort()
 
         current = close[-1]
         nearest_support = None
         nearest_resistance = None
-
         for s in supports:
             if s < current:
                 nearest_support = s
-
         for r in resistances:
             if r > current:
                 nearest_resistance = r
@@ -366,7 +360,6 @@ class EURUSDProBot:
         }
 
     def cluster_levels(self, levels, threshold=0.0005):
-        """Группировка близких уровней (5 пипсов)"""
         if not levels:
             return []
         levels.sort()
@@ -382,11 +375,9 @@ class EURUSDProBot:
         return clustered
 
     def calculate_probability(self, indicators):
-        """Расчёт вероятности на основе индикаторов"""
         votes_up = 0
         votes_down = 0
 
-        # RSI
         if 'rsi' in indicators:
             rsi = indicators['rsi']
             if rsi < 30:
@@ -398,7 +389,6 @@ class EURUSDProBot:
             else:
                 votes_down += 1
 
-        # MACD
         if 'macd_trend' in indicators:
             trend = indicators['macd_trend']
             if 'БЫЧИЙ' in trend:
@@ -406,7 +396,6 @@ class EURUSDProBot:
             elif 'МЕДВЕЖИЙ' in trend:
                 votes_down += 2
 
-        # Полосы Боллинджера
         if 'bb_signal' in indicators:
             bb = indicators['bb_signal']
             if 'ПЕРЕПРОДАННОСТЬ' in bb:
@@ -414,7 +403,6 @@ class EURUSDProBot:
             elif 'ПЕРЕКУПЛЕННОСТЬ' in bb:
                 votes_down += 2
 
-        # Скользящие средние
         for period in self.settings['sma_periods']:
             signal = indicators.get(f'sma_{period}_signal', '')
             if 'ВЫШЕ' in signal:
@@ -429,7 +417,6 @@ class EURUSDProBot:
             elif 'НИЖЕ' in signal:
                 votes_down += 1
 
-        # Поддержка/сопротивление
         if indicators.get('nearest_support') and indicators.get('nearest_resistance'):
             dist_s = indicators.get('distance_to_support', 100)
             dist_r = indicators.get('distance_to_resistance', 100)
@@ -450,7 +437,6 @@ class EURUSDProBot:
         return prob_up, prob_down, confidence
 
     def generate_message(self, indicators):
-        """Генерация подробного сообщения с индикаторами"""
         if not indicators:
             return "❌ Недостаточно данных для расчета индикаторов"
 
@@ -517,7 +503,6 @@ class EURUSDProBot:
                 signal = indicators.get(f'ema_{period}_signal', '')
                 message += f"├─ EMA({period}): `{indicators['ema'][period]:.5f}` {signal}\n"
 
-        # Ближайшие уровни с проверкой на None
         support_str = f"`{indicators['nearest_support']:.5f}`" if indicators.get(
             'nearest_support') is not None else "`не определен`"
         resistance_str = f"`{indicators['nearest_resistance']:.5f}`" if indicators.get(
@@ -545,7 +530,6 @@ class EURUSDProBot:
         return message
 
     async def get_signal(self):
-        """Получение сигнала с индикаторами"""
         try:
             candles = await self.fetch_historical_data(bars=100)
             if not candles:
@@ -568,60 +552,40 @@ bot = EURUSDProBot()
 
 
 # ========== ФУНКЦИИ ДЛЯ СОЗДАНИЯ МЕНЮ ==========
-
 def get_main_menu():
-    """Создаёт главное меню с кнопками"""
     keyboard = [
-        [
-            InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
-            InlineKeyboardButton("📈 Статус", callback_data='status')
-        ],
-        [
-            InlineKeyboardButton("🔔 Автосигнал", callback_data='auto_on'),
-            InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')
-        ],
-        [
-            InlineKeyboardButton("ℹ️ Помощь", callback_data='help'),
-            InlineKeyboardButton("⚙️ Настройки", callback_data='settings')
-        ]
+        [InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
+         InlineKeyboardButton("📈 Статус", callback_data='status')],
+        [InlineKeyboardButton("🔔 Автосигнал", callback_data='auto_on'),
+         InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
+        [InlineKeyboardButton("ℹ️ Помощь", callback_data='help'),
+         InlineKeyboardButton("⚙️ Настройки", callback_data='settings')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 def get_help_menu():
-    """Меню помощи"""
     keyboard = [
-        [
-            InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
-            InlineKeyboardButton("💰 Торговля", callback_data='help_trading')
-        ],
-        [
-            InlineKeyboardButton("❓ FAQ", callback_data='help_faq'),
-            InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')
-        ]
+        [InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
+         InlineKeyboardButton("💰 Торговля", callback_data='help_trading')],
+        [InlineKeyboardButton("❓ FAQ", callback_data='help_faq'),
+         InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 def get_settings_menu():
-    """Меню настроек"""
     keyboard = [
-        [
-            InlineKeyboardButton("📏 RSI период", callback_data='set_rsi'),
-            InlineKeyboardButton("📊 MACD", callback_data='set_macd')
-        ],
-        [
-            InlineKeyboardButton("📉 Bollinger Bands", callback_data='set_bb'),
-            InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')
-        ]
+        [InlineKeyboardButton("📏 RSI период", callback_data='set_rsi'),
+         InlineKeyboardButton("📊 MACD", callback_data='set_macd')],
+        [InlineKeyboardButton("📉 Bollinger Bands", callback_data='set_bb'),
+         InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 # ========== ФУНКЦИИ ДЛЯ ПОКАЗА МЕНЮ ==========
-
 async def show_main_menu(bot_instance, chat_id):
-    """Показывает главное меню"""
     await bot_instance.send_message(
         chat_id=chat_id,
         text="🤖 *Главное меню*\n\nВыберите действие:",
@@ -631,7 +595,6 @@ async def show_main_menu(bot_instance, chat_id):
 
 
 async def show_help_menu(bot_instance, chat_id):
-    """Показывает меню помощи"""
     await bot_instance.send_message(
         chat_id=chat_id,
         text="📖 *Раздел помощи*\n\nВыберите тему:",
@@ -641,7 +604,6 @@ async def show_help_menu(bot_instance, chat_id):
 
 
 async def show_settings_menu(bot_instance, chat_id):
-    """Показывает меню настроек"""
     settings_text = f"""
 ⚙️ *ТЕКУЩИЕ НАСТРОЙКИ*
 
@@ -662,9 +624,7 @@ async def show_settings_menu(bot_instance, chat_id):
 
 
 # ========== ФУНКЦИИ ДЛЯ РАЗДЕЛОВ ПОМОЩИ ==========
-
 async def send_help_indicators(bot_instance, chat_id):
-    """Подробная помощь по индикаторам"""
     text = f"""
 📊 ИНДИКАТОРЫ
 
@@ -687,7 +647,6 @@ async def send_help_indicators(bot_instance, chat_id):
 • SMA (простые): {bot.settings['sma_periods']}
 • EMA (экспоненциальные): {bot.settings['ema_periods']}
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -698,7 +657,6 @@ async def send_help_indicators(bot_instance, chat_id):
 
 
 async def send_help_trading(bot_instance, chat_id):
-    """Помощь по торговле"""
     text = """
 💰 КАК ТОРГОВАТЬ
 
@@ -714,7 +672,6 @@ async def send_help_trading(bot_instance, chat_id):
 • Не удваивайте после проигрыша
 • Лучше пропустить, чем ошибиться
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -725,7 +682,6 @@ async def send_help_trading(bot_instance, chat_id):
 
 
 async def send_help_faq(bot_instance, chat_id):
-    """FAQ"""
     text = """
 ❓ ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ
 
@@ -744,7 +700,6 @@ async def send_help_faq(bot_instance, chat_id):
 ❓ Бот работает 24/7?
 Да, бот запущен на Render.com и работает круглосуточно
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -755,9 +710,7 @@ async def send_help_faq(bot_instance, chat_id):
 
 
 # ========== ФУНКЦИИ ДЛЯ НАСТРОЕК ==========
-
 async def edit_setting_rsi(bot_instance, chat_id):
-    """Изменение настроек RSI"""
     text = f"""
 📏 НАСТРОЙКА RSI
 
@@ -770,7 +723,6 @@ async def edit_setting_rsi(bot_instance, chat_id):
 • rsi_overbought: уровень перекупленности (70)
 • rsi_oversold: уровень перепроданности (30)
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -781,7 +733,6 @@ async def edit_setting_rsi(bot_instance, chat_id):
 
 
 async def edit_setting_macd(bot_instance, chat_id):
-    """Изменение настроек MACD"""
     text = f"""
 📊 НАСТРОЙКА MACD
 
@@ -792,7 +743,6 @@ async def edit_setting_macd(bot_instance, chat_id):
 
 Для изменения параметров отредактируйте файл `render_bot_deploy.py`
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -803,7 +753,6 @@ async def edit_setting_macd(bot_instance, chat_id):
 
 
 async def edit_setting_bb(bot_instance, chat_id):
-    """Изменение настроек Bollinger Bands"""
     text = f"""
 📉 НАСТРОЙКА BOLLINGER BANDS
 
@@ -813,7 +762,6 @@ async def edit_setting_bb(bot_instance, chat_id):
 
 Для изменения параметров отредактируйте файл `render_bot_deploy.py`
     """
-
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -823,11 +771,9 @@ async def edit_setting_bb(bot_instance, chat_id):
     )
 
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
-
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
-    """Создаём event loop для каждого запроса"""
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -863,13 +809,11 @@ def health():
 def webhook():
     try:
         update_data = request.get_json()
-        logger.info(f"📨 Получено обновление от пользователя")
+        logger.info("📨 Получено обновление от пользователя")
 
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # Обработка callback-запросов от кнопок
             if 'callback_query' in update_data:
                 class CallbackQuery:
                     def __init__(self, data):
@@ -889,15 +833,8 @@ def webhook():
                 loop.run_until_complete(handle_message(chat_id, text))
             else:
                 logger.info("Получено обновление без текстового сообщения")
-
-            loop.close()
-        except Exception as e:
-            logger.error(f"Ошибка в цикле событий: {e}")
         finally:
-            try:
-                loop.close()
-            except:
-                pass
+            loop.close()
         return jsonify({'status': 'ok'})
     except Exception as e:
         logger.error(f"❌ Ошибка в webhook: {e}")
@@ -905,14 +842,11 @@ def webhook():
 
 
 async def handle_message(chat_id, text=None, update=None):
-    """Обработка сообщений с поддержкой кнопок"""
     try:
         bot_instance = Bot(token=BOT_TOKEN)
 
-        # Обработка callback-запросов от кнопок
         if update and hasattr(update, 'callback_query'):
             query = update.callback_query
-
             if query.data == 'signal':
                 await send_signal(bot_instance, chat_id)
             elif query.data == 'status':
@@ -920,6 +854,7 @@ async def handle_message(chat_id, text=None, update=None):
             elif query.data == 'auto_on':
                 with subscribers_lock:
                     subscribers.add(chat_id)
+                    save_subscribers(subscribers)
                 logger.info(f"✅ Пользователь {chat_id} включил автосигналы")
                 await bot_instance.send_message(
                     chat_id=chat_id,
@@ -929,6 +864,7 @@ async def handle_message(chat_id, text=None, update=None):
                 with subscribers_lock:
                     if chat_id in subscribers:
                         subscribers.remove(chat_id)
+                        save_subscribers(subscribers)
                         logger.info(f"⏹️ Пользователь {chat_id} отключил автосигналы")
                         await bot_instance.send_message(
                             chat_id=chat_id,
@@ -959,7 +895,6 @@ async def handle_message(chat_id, text=None, update=None):
                 await edit_setting_bb(bot_instance, chat_id)
             return
 
-        # Обработка обычных текстовых команд
         if text == '/start':
             await send_welcome(bot_instance, chat_id)
         elif text == '/signal':
@@ -972,6 +907,7 @@ async def handle_message(chat_id, text=None, update=None):
             with subscribers_lock:
                 if chat_id in subscribers:
                     subscribers.remove(chat_id)
+                    save_subscribers(subscribers)
                     await bot_instance.send_message(
                         chat_id=chat_id,
                         text="⏹️ Автоматические сигналы остановлены."
@@ -981,11 +917,11 @@ async def handle_message(chat_id, text=None, update=None):
                         chat_id=chat_id,
                         text="❌ Автоматические сигналы не были включены."
                     )
-        elif text == '📊 Сигнал' or text == 'сигнал':
+        elif text in ('📊 Сигнал', 'сигнал'):
             await send_signal(bot_instance, chat_id)
-        elif text == '📈 Статус' or text == 'статус':
+        elif text in ('📈 Статус', 'статус'):
             await send_status(bot_instance, chat_id)
-        elif text == 'ℹ️ Помощь' or text == 'помощь':
+        elif text in ('ℹ️ Помощь', 'помощь'):
             await show_help_menu(bot_instance, chat_id)
         else:
             await bot_instance.send_message(
@@ -997,7 +933,6 @@ async def handle_message(chat_id, text=None, update=None):
 
 
 async def send_welcome(bot_instance, chat_id):
-    """Отправка приветствия с меню"""
     welcome_text = """
 🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
 
@@ -1011,7 +946,6 @@ async def send_welcome(bot_instance, chat_id):
 
 *Бот работает 24/7 на Render.com!*
     """
-
     await bot_instance.send_message(
         chat_id=chat_id,
         text=welcome_text,
@@ -1022,7 +956,6 @@ async def send_welcome(bot_instance, chat_id):
 
 
 async def send_signal(bot_instance, chat_id):
-    """Отправка сигнала с индикаторами"""
     try:
         await bot_instance.send_message(
             chat_id=chat_id,
@@ -1035,10 +968,10 @@ async def send_signal(bot_instance, chat_id):
                 text="❌ Не удалось получить данные для анализа. Проверьте API ключ Twelve Data."
             )
             return
-        message = bot.generate_message(indicators)
+        msg = bot.generate_message(indicators)
         await bot_instance.send_message(
             chat_id=chat_id,
-            text=message,
+            text=msg,
             parse_mode='Markdown'
         )
         logger.info(f"✅ Профессиональный сигнал отправлен пользователю {chat_id}")
@@ -1051,7 +984,6 @@ async def send_signal(bot_instance, chat_id):
 
 
 async def send_status(bot_instance, chat_id):
-    """Статус бота"""
     with subscribers_lock:
         auto_status = "включены" if chat_id in subscribers else "отключены"
     status_text = f"""
@@ -1078,9 +1010,7 @@ async def send_status(bot_instance, chat_id):
 
 
 # ========== ФОНОВАЯ ЗАДАЧА ДЛЯ АВТОСИГНАЛОВ ==========
-
 async def auto_signal_worker():
-    """Фоновая задача, отправляющая сигналы подписчикам каждую минуту"""
     logger.info("🚀 Фоновая задача автосигналов запущена")
     while True:
         await asyncio.sleep(60)
@@ -1092,7 +1022,6 @@ async def auto_signal_worker():
                 try:
                     logger.info(f"👉 Начинаю отправку автосигнала для {chat_id}")
                     bot_instance = Bot(token=BOT_TOKEN)
-                    # Отправляем уведомление о начале
                     await bot_instance.send_message(
                         chat_id=chat_id,
                         text="🔄 Автоматический сигнал..."
@@ -1119,21 +1048,18 @@ async def auto_signal_worker():
 
 
 def start_background_loop():
-    """Запускает фоновую асинхронную задачу в отдельном потоке"""
     logger.info("🔄 Запуск фонового потока для автосигналов")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_signal_worker())
 
 
-# Запускаем фоновую задачу в отдельном демоническом потоке
-# Поток будет запущен только один раз при старте приложения
+# Запуск фонового потока (один раз)
 thread = threading.Thread(target=start_background_loop, daemon=True)
 thread.start()
 logger.info("✅ Фоновый поток для автосигналов запущен")
 
 # ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
