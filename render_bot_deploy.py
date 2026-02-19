@@ -511,17 +511,30 @@ class EURUSDProBot:
                 signal = indicators.get(f'ema_{period}_signal', '')
                 message += f"├─ EMA({period}): `{indicators['ema'][period]:.5f}` {signal}\n"
 
-        message += f"""
-📊 *Уровни поддержки/сопротивления*
-┌─ Ближайшая поддержка: `{indicators['nearest_support']:.5f}` (дист: {indicators['distance_to_support']:.0f} пипсов)
-└─ Ближайшее сопротивление: `{indicators['nearest_resistance']:.5f}` (дист: {indicators['distance_to_resistance']:.0f} пипсов)
-"""
-        if indicators['support_levels']:
-            supports = [f"{s:.5f}" for s in indicators['support_levels']]
-            message += f"├─ Уровни поддержки: {', '.join(supports)}\n"
-        if indicators['resistance_levels']:
-            resistances = [f"{r:.5f}" for r in indicators['resistance_levels']]
-            message += f"└─ Уровни сопротивления: {', '.join(resistances)}\n"
+                # Ближайшие уровни с проверкой на None
+                support_str = f"`{indicators['nearest_support']:.5f}`" if indicators.get(
+                    'nearest_support') is not None else "`не определен`"
+                resistance_str = f"`{indicators['nearest_resistance']:.5f}`" if indicators.get(
+                    'nearest_resistance') is not None else "`не определен`"
+                dist_support_str = f"{indicators['distance_to_support']:.0f}" if indicators.get(
+                    'distance_to_support') is not None else "?"
+                dist_resistance_str = f"{indicators['distance_to_resistance']:.0f}" if indicators.get(
+                    'distance_to_resistance') is not None else "?"
+
+                message += f"""
+        📊 *Уровни поддержки/сопротивления*
+        ┌─ Ближайшая поддержка: {support_str} (дист: {dist_support_str} пипсов)
+        └─ Ближайшее сопротивление: {resistance_str} (дист: {dist_resistance_str} пипсов)
+        """
+                # Списки уровней (только если не пустые)
+                if indicators.get('support_levels'):
+                    supports = [f"{s:.5f}" for s in indicators['support_levels'] if s is not None]
+                    if supports:
+                        message += f"├─ Уровни поддержки: {', '.join(supports)}\n"
+                if indicators.get('resistance_levels'):
+                    resistances = [f"{r:.5f}" for r in indicators['resistance_levels'] if r is not None]
+                    if resistances:
+                        message += f"└─ Уровни сопротивления: {', '.join(resistances)}\n"
 
         message += f"\n#{'BUY' if prob_up > prob_down else 'SELL'} #EURUSD #TECHNICAL #ANALYSIS"
         return message
