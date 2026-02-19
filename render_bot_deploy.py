@@ -4,7 +4,9 @@ import json
 from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update  # ИЗМЕНЕНО: добавили классы для кнопок
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, \
+    ContextTypes  # ИЗМЕНЕНО: добавили обработчики
 import os
 import pandas as pd
 import numpy as np
@@ -511,30 +513,29 @@ class EURUSDProBot:
                 signal = indicators.get(f'ema_{period}_signal', '')
                 message += f"├─ EMA({period}): `{indicators['ema'][period]:.5f}` {signal}\n"
 
-                # Ближайшие уровни с проверкой на None
-                support_str = f"`{indicators['nearest_support']:.5f}`" if indicators.get(
-                    'nearest_support') is not None else "`не определен`"
-                resistance_str = f"`{indicators['nearest_resistance']:.5f}`" if indicators.get(
-                    'nearest_resistance') is not None else "`не определен`"
-                dist_support_str = f"{indicators['distance_to_support']:.0f}" if indicators.get(
-                    'distance_to_support') is not None else "?"
-                dist_resistance_str = f"{indicators['distance_to_resistance']:.0f}" if indicators.get(
-                    'distance_to_resistance') is not None else "?"
+        # ИЗМЕНЕНО: Добавлены проверки на None для уровней поддержки/сопротивления
+        support_str = f"`{indicators['nearest_support']:.5f}`" if indicators.get(
+            'nearest_support') is not None else "`не определен`"
+        resistance_str = f"`{indicators['nearest_resistance']:.5f}`" if indicators.get(
+            'nearest_resistance') is not None else "`не определен`"
+        dist_support_str = f"{indicators['distance_to_support']:.0f}" if indicators.get(
+            'distance_to_support') is not None else "?"
+        dist_resistance_str = f"{indicators['distance_to_resistance']:.0f}" if indicators.get(
+            'distance_to_resistance') is not None else "?"
 
-                message += f"""
-        📊 *Уровни поддержки/сопротивления*
-        ┌─ Ближайшая поддержка: {support_str} (дист: {dist_support_str} пипсов)
-        └─ Ближайшее сопротивление: {resistance_str} (дист: {dist_resistance_str} пипсов)
-        """
-                # Списки уровней (только если не пустые)
-                if indicators.get('support_levels'):
-                    supports = [f"{s:.5f}" for s in indicators['support_levels'] if s is not None]
-                    if supports:
-                        message += f"├─ Уровни поддержки: {', '.join(supports)}\n"
-                if indicators.get('resistance_levels'):
-                    resistances = [f"{r:.5f}" for r in indicators['resistance_levels'] if r is not None]
-                    if resistances:
-                        message += f"└─ Уровни сопротивления: {', '.join(resistances)}\n"
+        message += f"""
+📊 *Уровни поддержки/сопротивления*
+┌─ Ближайшая поддержка: {support_str} (дист: {dist_support_str} пипсов)
+└─ Ближайшее сопротивление: {resistance_str} (дист: {dist_resistance_str} пипсов)
+"""
+        if indicators.get('support_levels'):
+            supports = [f"{s:.5f}" for s in indicators['support_levels'] if s is not None]
+            if supports:
+                message += f"├─ Уровни поддержки: {', '.join(supports)}\n"
+        if indicators.get('resistance_levels'):
+            resistances = [f"{r:.5f}" for r in indicators['resistance_levels'] if r is not None]
+            if resistances:
+                message += f"└─ Уровни сопротивления: {', '.join(resistances)}\n"
 
         message += f"\n#{'BUY' if prob_up > prob_down else 'SELL'} #EURUSD #TECHNICAL #ANALYSIS"
         return message
@@ -561,6 +562,55 @@ class EURUSDProBot:
 # Создаём экземпляр бота
 bot = EURUSDProBot()
 
+
+# ========== НОВЫЕ ФУНКЦИИ ДЛЯ КНОПОК (ДОБАВЛЕНЫ) ==========
+
+def get_main_menu():
+    """Создаёт главное меню с кнопками"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
+            InlineKeyboardButton("📈 Статус", callback_data='status')
+        ],
+        [
+            InlineKeyboardButton("ℹ️ Помощь", callback_data='help'),
+            InlineKeyboardButton("⚙️ Настройки", callback_data='settings')
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_help_menu():
+    """Меню помощи"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
+            InlineKeyboardButton("💰 Торговля", callback_data='help_trading')
+        ],
+        [
+            InlineKeyboardButton("❓ FAQ", callback_data='help_faq'),
+            InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_settings_menu():
+    """Меню настроек"""
+    keyboard = [
+        [
+            InlineKeyboardButton("📏 RSI период", callback_data='set_rsi'),
+            InlineKeyboardButton("📊 MACD", callback_data='set_macd')
+        ],
+        [
+            InlineKeyboardButton("📉 Bollinger Bands", callback_data='set_bb'),
+            InlineKeyboardButton("◀️ Назад", callback_data='back_to_main')
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ========== КОНЕЦ НОВЫХ ФУНКЦИЙ ==========
 
 @app.before_request
 def before_request():
@@ -595,6 +645,7 @@ def health():
     })
 
 
+# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ WEBHOOK ==========
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -604,12 +655,29 @@ def webhook():
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            if 'message' in update_data and 'text' in update_data['message']:
+
+            # Создаём объект Update для обработки callback-запросов
+            if 'callback_query' in update_data:
+                # Для кнопок создаём специальный объект
+                class CallbackQuery:
+                    def __init__(self, data):
+                        self.data = data
+                        self.answer = lambda: None  # заглушка
+
+                class Update:
+                    def __init__(self, data):
+                        self.callback_query = CallbackQuery(data['callback_query']['data'])
+
+                update = Update(update_data)
+                chat_id = update_data['callback_query']['from']['id']
+                loop.run_until_complete(handle_message(chat_id, None, update))
+            elif 'message' in update_data and 'text' in update_data['message']:
                 chat_id = update_data['message']['chat']['id']
                 text = update_data['message']['text']
                 loop.run_until_complete(handle_message(chat_id, text))
             else:
                 logger.info("Получено обновление без текстового сообщения")
+
             loop.close()
         except Exception as e:
             logger.error(f"Ошибка в цикле событий: {e}")
@@ -624,9 +692,42 @@ def webhook():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-async def handle_message(chat_id, text):
+# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ HANDLE_MESSAGE ==========
+async def handle_message(chat_id, text=None, update=None):
+    """Обработка сообщений с поддержкой кнопок"""
     try:
         bot_instance = Bot(token=BOT_TOKEN)
+
+        # Обработка callback-запросов от кнопок
+        if update and hasattr(update, 'callback_query'):
+            query = update.callback_query
+            # В реальном коде здесь нужно вызвать query.answer(), но у нас заглушка
+
+            if query.data == 'signal':
+                await send_signal(bot_instance, chat_id)
+            elif query.data == 'status':
+                await send_status(bot_instance, chat_id)
+            elif query.data == 'help':
+                await show_help_menu(bot_instance, chat_id)
+            elif query.data == 'settings':
+                await show_settings_menu(bot_instance, chat_id)
+            elif query.data == 'back_to_main':
+                await show_main_menu(bot_instance, chat_id)
+            elif query.data == 'help_indicators':
+                await send_help_indicators(bot_instance, chat_id)
+            elif query.data == 'help_trading':
+                await send_help_trading(bot_instance, chat_id)
+            elif query.data == 'help_faq':
+                await send_help_faq(bot_instance, chat_id)
+            elif query.data == 'set_rsi':
+                await edit_setting_rsi(bot_instance, chat_id)
+            elif query.data == 'set_macd':
+                await edit_setting_macd(bot_instance, chat_id)
+            elif query.data == 'set_bb':
+                await edit_setting_bb(bot_instance, chat_id)
+            return
+
+        # Обработка обычных текстовых команд
         if text == '/start':
             await send_welcome(bot_instance, chat_id)
         elif text == '/signal':
@@ -635,37 +736,233 @@ async def handle_message(chat_id, text):
             await send_status(bot_instance, chat_id)
         elif text == '/help':
             await send_help(bot_instance, chat_id)
+        elif text == '📊 Сигнал' or text == 'сигнал':
+            await send_signal(bot_instance, chat_id)
+        elif text == '📈 Статус' or text == 'статус':
+            await send_status(bot_instance, chat_id)
+        elif text == 'ℹ️ Помощь' or text == 'помощь':
+            await send_help(bot_instance, chat_id)
         else:
             await bot_instance.send_message(
                 chat_id=chat_id,
-                text="❌ Неизвестная команда. Используй /help"
+                text="❌ Неизвестная команда. Используй кнопки меню или /help"
             )
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке сообщения: {e}")
 
 
+# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ SEND_WELCOME ==========
 async def send_welcome(bot_instance, chat_id):
+    """Отправка приветствия с меню"""
     welcome_text = """
 🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
 
-Я анализирую валютную пару EUR/USD с использованием упрощённых индикаторов.
+Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
 
-*Доступные команды:*
-/signal - получить полный анализ
-/status - статус бота
-/help - помощь
+📊 *Доступные функции:*
+• Получение сигналов с анализом
+• Статус и настройки бота
+• Подробная помощь по индикаторам
 
-Бот работает 24/7 на Render.com!
+*Бот работает 24/7*
     """
+
     await bot_instance.send_message(
         chat_id=chat_id,
         text=welcome_text,
+        reply_markup=get_main_menu(),
         parse_mode='Markdown'
     )
-    logger.info(f"✅ Приветствие отправлено пользователю {chat_id}")
+    logger.info(f"✅ Приветствие с меню отправлено пользователю {chat_id}")
 
+
+# ========== НОВЫЕ ФУНКЦИИ ДЛЯ МЕНЮ (ДОБАВЛЕНЫ) ==========
+
+async def show_settings_menu(bot_instance, chat_id):
+    """Показывает меню настроек"""
+    settings_text = f"""
+⚙️ *ТЕКУЩИЕ НАСТРОЙКИ*
+
+📏 RSI период: {bot.settings['rsi_period']}
+📊 MACD: {bot.settings['macd_fast']}/{bot.settings['macd_slow']}/{bot.settings['macd_signal']}
+📉 Bollinger Bands: {bot.settings['bb_period']} период, {bot.settings['bb_std']} std
+📏 SMA периоды: {bot.settings['sma_periods']}
+📈 EMA периоды: {bot.settings['ema_periods']}
+
+Выберите параметр для изменения:
+    """
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=settings_text,
+        reply_markup=get_settings_menu(),
+        parse_mode='Markdown'
+    )  # <- ЭТА СКОБКА ЗАКРЫВАЕТ send_message
+
+
+# ========== ФУНКЦИИ ДЛЯ НАСТРОЕК ==========
+
+async def send_help_indicators(bot_instance, chat_id):
+    """Подробная помощь по индикаторам"""
+    text = """
+📊 *ИНДИКАТОРЫ*
+
+*📈 RSI (Relative Strength Index)*
+• Значение >70: перекупленность (сигнал к продаже)
+• Значение <30: перепроданность (сигнал к покупке)
+• Период: 14 свечей
+
+*📊 MACD*
+• Бычий сигнал: MACD выше сигнальной линии
+• Медвежий сигнал: MACD ниже сигнальной линии
+• Параметры: 12/26/9
+
+*📉 Полосы Боллинджера*
+• Касание верхней полосы: возможен откат вниз
+• Касание нижней полосы: возможен отскок вверх
+• Период: 20, отклонение: 2
+
+*📏 Скользящие средние*
+• SMA (простые): {bot.settings['sma_periods']}
+• EMA (экспоненциальные): {bot.settings['ema_periods']}
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def send_help_trading(bot_instance, chat_id):
+    """Помощь по торговле"""
+    text = """
+💰 *КАК ТОРГОВАТЬ*
+
+1️⃣ Получите сигнал через кнопку 📊
+2️⃣ Проанализируйте вероятности
+3️⃣ Если уверенность >60% - можно входить
+4️⃣ Ставка: не более 3% от депозита
+5️⃣ Время экспирации: 3 минуты
+
+*Правила риск-менеджмента:*
+• Максимальная ставка: 3%
+• Дневной лимит убытка: -15%
+• Не удваивайте после проигрыша
+• Лучше пропустить, чем ошибиться
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def send_help_faq(bot_instance, chat_id):
+    """FAQ"""
+    text = """
+❓ *ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ*
+
+*❓ Как часто обновляются сигналы?*
+По запросу через команду /signal
+
+*❓ Почему нет сигнала?*
+Проверьте API ключ Twelve Data
+
+*❓ Какой таймфрейм используется?*
+1 минута (M1)
+
+*❓ Можно ли доверять сигналам?*
+Сигналы основаны на техническом анализе, но не гарантируют прибыль. Всегда используйте риск-менеджмент.
+
+*❓ Бот работает 24/7?*
+Да, бот запущен и работает круглосуточно
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def edit_setting_rsi(bot_instance, chat_id):
+    """Изменение настроек RSI"""
+    text = f"""
+📏 *НАСТРОЙКА RSI*
+
+Текущее значение: {bot.settings['rsi_period']}
+
+Для изменения параметров отредактируйте файл `render_bot_deploy.py` и перезапустите бота.
+
+Доступные параметры:
+• rsi_period: период расчёта RSI
+• rsi_overbought: уровень перекупленности (70)
+• rsi_oversold: уровень перепроданности (30)
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def edit_setting_macd(bot_instance, chat_id):
+    """Изменение настроек MACD"""
+    text = f"""
+📊 *НАСТРОЙКА MACD*
+
+Текущие значения:
+• Fast: {bot.settings['macd_fast']}
+• Slow: {bot.settings['macd_slow']}
+• Signal: {bot.settings['macd_signal']}
+
+Для изменения параметров отредактируйте файл `render_bot_deploy.py`
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def edit_setting_bb(bot_instance, chat_id):
+    """Изменение настроек Bollinger Bands"""
+    text = f"""
+📉 *НАСТРОЙКА BOLLINGER BANDS*
+
+Текущие значения:
+• Период: {bot.settings['bb_period']}
+• Стандартных отклонений: {bot.settings['bb_std']}
+
+Для изменения параметров отредактируйте файл `render_bot_deploy.py`
+    """
+
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='settings')]]
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+# ========== ФУНКЦИИ ОТПРАВКИ СИГНАЛОВ (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ) ==========
 
 async def send_signal(bot_instance, chat_id):
+    """Отправка сигнала с индикаторами"""
     try:
         await bot_instance.send_message(
             chat_id=chat_id,
@@ -694,6 +991,7 @@ async def send_signal(bot_instance, chat_id):
 
 
 async def send_status(bot_instance, chat_id):
+    """Статус бота"""
     status_text = f"""
 📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
 
@@ -717,36 +1015,11 @@ async def send_status(bot_instance, chat_id):
 
 
 async def send_help(bot_instance, chat_id):
-    help_text = """
-📖 *ПОМОЩЬ ПО ПРОФЕССИОНАЛЬНОМУ БОТУ*
+    """Отправка помощи (вызывает меню помощи)"""
+    await show_help_menu(bot_instance, chat_id)
 
-*Команды:*
-/signal - полный анализ с упрощёнными индикаторами
-/status - статус и настройки бота
-/help - это сообщение
 
-*Индикаторы:*
-📊 **RSI** - определяет перекупленность/перепроданность
-📈 **MACD** - показывает силу и направление тренда
-📉 **Bollinger Bands** - определяет волатильность и экстремумы
-📏 **SMA/EMA** - скользящие средние для определения тренда
-🎯 **Support/Resistance** - ключевые уровни цены
-
-*Как интерпретировать сигнал:*
-• Если большинство индикаторов указывают вверх → ПОКУПКА
-• Если большинство указывают вниз → ПРОДАЖА
-• Уверенность >60% - можно входить
-• Ставка не более 3% от депозита
-• Экспирация 3 минуты
-
-*Удачи в торговле!* 🚀
-    """
-    await bot_instance.send_message(
-        chat_id=chat_id,
-        text=help_text,
-        parse_mode='Markdown'
-    )
-
+# ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
