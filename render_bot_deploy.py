@@ -32,6 +32,10 @@ if not TWELVE_API_KEY:
 
 # Множество подписчиков на автосигналы (храним chat_id)
 subscribers = set()
+subscribers_lock = threading.Lock()
+
+# Флаг, чтобы фоновый поток запускался только один раз
+background_thread_started = False
 
 
 class EURUSDProBot:
@@ -173,6 +177,8 @@ class EURUSDProBot:
         ema_slow = self._ema(data, slow)
         macd_line = ema_fast - ema_slow
 
+        # Для сигнальной линии нужна EMA от MACD за signal период.
+        # Упрощённо: вернём только линию
         return macd_line, 0.0, 0.0
 
     # ---------- Основной расчёт индикаторов ----------
@@ -839,7 +845,7 @@ def index():
         <li><b>/start</b> - показать меню</li>
         <li><b>/signal</b> - получить сигнал</li>
         <li><b>/status</b> - статус бота</li>
-        <li><b>/help</b> - помощь</li>
+        <li><b>/stop</b> - остановить автосигналы</li>
     </ul>
     """
 
@@ -912,23 +918,27 @@ async def handle_message(chat_id, text=None, update=None):
             elif query.data == 'status':
                 await send_status(bot_instance, chat_id)
             elif query.data == 'auto_on':
-                subscribers.add(chat_id)
+                with subscribers_lock:
+                    subscribers.add(chat_id)
+                logger.info(f"✅ Пользователь {chat_id} включил автосигналы")
                 await bot_instance.send_message(
                     chat_id=chat_id,
                     text="✅ Автоматические сигналы включены! Теперь вы будете получать сигнал каждую минуту.\nДля остановки нажмите кнопку ⏹️ Стоп."
                 )
             elif query.data == 'auto_off':
-                if chat_id in subscribers:
-                    subscribers.remove(chat_id)
-                    await bot_instance.send_message(
-                        chat_id=chat_id,
-                        text="⏹️ Автоматические сигналы остановлены."
-                    )
-                else:
-                    await bot_instance.send_message(
-                        chat_id=chat_id,
-                        text="❌ Автоматические сигналы не были включены."
-                    )
+                with subscribers_lock:
+                    if chat_id in subscribers:
+                        subscribers.remove(chat_id)
+                        logger.info(f"⏹️ Пользователь {chat_id} отключил автосигналы")
+                        await bot_instance.send_message(
+                            chat_id=chat_id,
+                            text="⏹️ Автоматические сигналы остановлены."
+                        )
+                    else:
+                        await bot_instance.send_message(
+                            chat_id=chat_id,
+                            text="❌ Автоматические сигналы не были включены."
+                        )
             elif query.data == 'help':
                 await show_help_menu(bot_instance, chat_id)
             elif query.data == 'settings':
@@ -959,11 +969,18 @@ async def handle_message(chat_id, text=None, update=None):
         elif text == '/help':
             await show_help_menu(bot_instance, chat_id)
         elif text == '/stop':
-            if chat_id in subscribers:
-                subscribers.remove(chat_id)
-                await bot_instance.send_message(chat_id=chat_id, text="⏹️ Автоматические сигналы остановлены.")
-            else:
-                await bot_instance.send_message(chat_id=chat_id, text="❌ Автоматические сигналы не были включены.")
+            with subscribers_lock:
+                if chat_id in subscribers:
+                    subscribers.remove(chat_id)
+                    await bot_instance.send_message(
+                        chat_id=chat_id,
+                        text="⏹️ Автоматические сигналы остановлены."
+                    )
+                else:
+                    await bot_instance.send_message(
+                        chat_id=chat_id,
+                        text="❌ Автоматические сигналы не были включены."
+                    )
         elif text == '📊 Сигнал' or text == 'сигнал':
             await send_signal(bot_instance, chat_id)
         elif text == '📈 Статус' or text == 'статус':
@@ -1035,7 +1052,8 @@ async def send_signal(bot_instance, chat_id):
 
 async def send_status(bot_instance, chat_id):
     """Статус бота"""
-    auto_status = "включены" if chat_id in subscribers else "отключены"
+    with subscribers_lock:
+        auto_status = "включены" if chat_id in subscribers else "отключены"
     status_text = f"""
 📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
 
@@ -1063,12 +1081,16 @@ async def send_status(bot_instance, chat_id):
 
 async def auto_signal_worker():
     """Фоновая задача, отправляющая сигналы подписчикам каждую минуту"""
+    logger.info("🚀 Фоновая задача автосигналов запущена")
     while True:
         await asyncio.sleep(60)
-        if subscribers:
-            logger.info(f"🔄 Отправка автоматических сигналов {len(subscribers)} подписчикам")
-            for chat_id in list(subscribers):  # копируем, чтобы избежать ошибок при изменении
+        with subscribers_lock:
+            current_subscribers = list(subscribers)
+        if current_subscribers:
+            logger.info(f"🔄 Отправка автоматических сигналов {len(current_subscribers)} подписчикам")
+            for chat_id in current_subscribers:
                 try:
+                    logger.info(f"👉 Начинаю отправку автосигнала для {chat_id}")
                     bot_instance = Bot(token=BOT_TOKEN)
                     # Отправляем уведомление о начале
                     await bot_instance.send_message(
@@ -1083,24 +1105,34 @@ async def auto_signal_worker():
                             text=msg,
                             parse_mode='Markdown'
                         )
+                        logger.info(f"✅ Автосигнал отправлен для {chat_id}")
                     else:
                         await bot_instance.send_message(
                             chat_id=chat_id,
                             text="❌ Не удалось получить сигнал."
                         )
+                        logger.error(f"❌ Не удалось получить сигнал для {chat_id}")
                 except Exception as e:
-                    logger.error(f"Ошибка автосигнала для {chat_id}: {e}")
+                    logger.error(f"❌ Ошибка автосигнала для {chat_id}: {e}")
+        else:
+            logger.debug("Нет подписчиков на автосигналы")
 
 
 def start_background_loop():
     """Запускает фоновую асинхронную задачу в отдельном потоке"""
+    logger.info("🔄 Запуск фонового потока для автосигналов")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_signal_worker())
 
 
-# Запускаем фоновую задачу в отдельном демоническом потоке
-threading.Thread(target=start_background_loop, daemon=True).start()
+# Запускаем фоновую задачу в отдельном демоническом потоке (только один раз)
+global background_thread_started
+if not background_thread_started:
+    background_thread_started = True
+    thread = threading.Thread(target=start_background_loop, daemon=True)
+    thread.start()
+    logger.info("✅ Фоновый поток для автосигналов запущен")
 
 # ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
