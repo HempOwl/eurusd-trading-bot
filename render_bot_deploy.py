@@ -653,25 +653,25 @@ async def show_settings_menu(bot_instance, chat_id):
 
 async def send_help_indicators(bot_instance, chat_id):
     """Подробная помощь по индикаторам"""
-    text = """
-📊 *ИНДИКАТОРЫ*
+    text = f"""
+📊 ИНДИКАТОРЫ
 
-*📈 RSI (Relative Strength Index)*
+📈 RSI (Relative Strength Index)
 • Значение >70: перекупленность (сигнал к продаже)
 • Значение <30: перепроданность (сигнал к покупке)
 • Период: 14 свечей
 
-*📊 MACD*
+📊 MACD
 • Бычий сигнал: MACD выше сигнальной линии
 • Медвежий сигнал: MACD ниже сигнальной линии
 • Параметры: 12/26/9
 
-*📉 Полосы Боллинджера*
+📉 Полосы Боллинджера
 • Касание верхней полосы: возможен откат вниз
 • Касание нижней полосы: возможен отскок вверх
 • Период: 20, отклонение: 2
 
-*📏 Скользящие средние*
+📏 Скользящие средние
 • SMA (простые): {bot.settings['sma_periods']}
 • EMA (экспоненциальные): {bot.settings['ema_periods']}
     """
@@ -681,22 +681,22 @@ async def send_help_indicators(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
 async def send_help_trading(bot_instance, chat_id):
     """Помощь по торговле"""
     text = """
-💰 *КАК ТОРГОВАТЬ*
+💰 КАК ТОРГОВАТЬ
 
-1️⃣ Получите сигнал через кнопку 📊
-2️⃣ Проанализируйте вероятности
-3️⃣ Если уверенность >60% - можно входить
-4️⃣ Ставка: не более 3% от депозита
-5️⃣ Время экспирации: 3 минуты
+1. Получите сигнал через кнопку 📊
+2. Проанализируйте вероятности
+3. Если уверенность >60% - можно входить
+4. Ставка: не более 0.25% - 0.5% от депозита
+5. Время экспирации: 3 минуты
 
-*Правила риск-менеджмента:*
+Правила риск-менеджмента:
 • Максимальная ставка: 3%
 • Дневной лимит убытка: -15%
 • Не удваивайте после проигрыша
@@ -708,29 +708,29 @@ async def send_help_trading(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
 async def send_help_faq(bot_instance, chat_id):
     """FAQ"""
     text = """
-❓ *ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ*
+❓ ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ
 
-*❓ Как часто обновляются сигналы?*
+❓ Как часто обновляются сигналы?
 По запросу через команду /signal
 
-*❓ Почему нет сигнала?*
-Проверьте API ключ Twelve Data в настройках Render
+❓ Почему нет сигнала?
+Проверьте API ключ Twelve Data
 
-*❓ Какой таймфрейм используется?*
+❓ Какой таймфрейм используется?
 1 минута (M1)
 
-*❓ Можно ли доверять сигналам?*
+❓ Можно ли доверять сигналам?
 Сигналы основаны на техническом анализе, но не гарантируют прибыль. Всегда используйте риск-менеджмент.
 
-*❓ Бот работает 24/7?*
-Да, бот запущен на Render.com и работает круглосуточно
+❓ Бот работает 24/7?
+Да, бот запущен и работает круглосуточно
     """
 
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
@@ -738,7 +738,7 @@ async def send_help_faq(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
@@ -747,7 +747,7 @@ async def send_help_faq(bot_instance, chat_id):
 async def edit_setting_rsi(bot_instance, chat_id):
     """Изменение настроек RSI"""
     text = f"""
-📏 *НАСТРОЙКА RSI*
+📏 НАСТРОЙКА RSI
 
 Текущее значение: {bot.settings['rsi_period']}
 
@@ -764,14 +764,14 @@ async def edit_setting_rsi(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
 async def edit_setting_macd(bot_instance, chat_id):
     """Изменение настроек MACD"""
     text = f"""
-📊 *НАСТРОЙКА MACD*
+📊 НАСТРОЙКА MACD
 
 Текущие значения:
 • Fast: {bot.settings['macd_fast']}
@@ -786,14 +786,14 @@ async def edit_setting_macd(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
 async def edit_setting_bb(bot_instance, chat_id):
     """Изменение настроек Bollinger Bands"""
     text = f"""
-📉 *НАСТРОЙКА BOLLINGER BANDS*
+📉 НАСТРОЙКА BOLLINGER BANDS
 
 Текущие значения:
 • Период: {bot.settings['bb_period']}
@@ -807,7 +807,7 @@ async def edit_setting_bb(bot_instance, chat_id):
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode=None
     )
 
 
@@ -857,22 +857,27 @@ def webhook():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # Создаём объект Update для обработки callback-запросов
+            # Обработка callback-запросов от кнопок
             if 'callback_query' in update_data:
                 # Для кнопок создаём специальный объект
                 class CallbackQuery:
                     def __init__(self, data):
                         self.data = data
-                        self.answer = lambda: None  # заглушка
 
-                class Update:
-                    def __init__(self, data):
-                        self.callback_query = CallbackQuery(data['callback_query']['data'])
+                    class CallbackQuery:
+                        def __init__(self, data):
+                            self.data = data
+                            self.answer = lambda: None  # заглушка
 
-                update = Update(update_data)
-                chat_id = update_data['callback_query']['from']['id']
-                loop.run_until_complete(handle_message(chat_id, None, update))
-            elif 'message' in update_data and 'text' in update_data['message']:
+                    class Update:
+                        def __init__(self, data):
+                            self.callback_query = CallbackQuery(data['callback_query']['data'])
+
+                    update = Update(update_data)
+                    chat_id = update_data['callback_query']['from']['id']
+                    loop.run_until_complete(handle_message(chat_id, None, update))
+
+                elif 'message' in update_data and 'text' in update_data['message']:
                 chat_id = update_data['message']['chat']['id']
                 text = update_data['message']['text']
                 loop.run_until_complete(handle_message(chat_id, text))
@@ -953,17 +958,17 @@ async def handle_message(chat_id, text=None, update=None):
 async def send_welcome(bot_instance, chat_id):
     """Отправка приветствия с меню"""
     welcome_text = """
-🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
+    🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
 
-Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
+    Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
 
-📊 *Доступные функции:*
-• Получение сигналов с анализом
-• Статус и настройки бота
-• Подробная помощь по индикаторам
+    📊 *Доступные функции:*
+    • Получение сигналов с анализом
+    • Статус и настройки бота
+    • Подробная помощь по индикаторам
 
-*Бот работает 24/7
-    """
+    *Бот работает 24/7 на Render.com!*
+        """
 
     await bot_instance.send_message(
         chat_id=chat_id,
@@ -1006,20 +1011,20 @@ async def send_signal(bot_instance, chat_id):
 async def send_status(bot_instance, chat_id):
     """Статус бота"""
     status_text = f"""
-📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
+    📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
 
-✅ Бот работает 24/7
-📈 Упрощённые индикаторы активны
-💹 Последний сигнал: {'есть' if bot.last_signal else 'нет'}
-⏰ Время сервера: {datetime.now().strftime('%H:%M:%S')}
+    ✅ Бот работает 24/7
+    📈 Упрощённые индикаторы активны
+    💹 Последний сигнал: {'есть' if bot.last_signal else 'нет'}
+    ⏰ Время сервера: {datetime.now().strftime('%H:%M:%S')}
 
-*Настройки индикаторов:*
-• RSI период: {bot.settings['rsi_period']}
-• MACD: {bot.settings['macd_fast']}/{bot.settings['macd_slow']}/{bot.settings['macd_signal']}
-• Полосы Боллинджера: {bot.settings['bb_period']} период, {bot.settings['bb_std']} std
-• SMA периоды: {bot.settings['sma_periods']}
-• EMA периоды: {bot.settings['ema_periods']}
-    """
+    *Настройки индикаторов:*
+    • RSI период: {bot.settings['rsi_period']}
+    • MACD: {bot.settings['macd_fast']}/{bot.settings['macd_slow']}/{bot.settings['macd_signal']}
+    • Полосы Боллинджера: {bot.settings['bb_period']} период, {bot.settings['bb_std']} std
+    • SMA периоды: {bot.settings['sma_periods']}
+    • EMA периоды: {bot.settings['ema_periods']}
+        """
     await bot_instance.send_message(
         chat_id=chat_id,
         text=status_text,
