@@ -4,4 +4,4 @@ aiohttp==3.9.1
 gunicorn==21.2.0
 pandas==1.5.3
 numpy==1.23.5
-pandas-ta==0.3.14b0
+pandas-ta
