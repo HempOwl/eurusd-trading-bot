@@ -8,6 +8,8 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 import os
 import pandas as pd
 import numpy as np
+import threading
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -27,6 +29,9 @@ if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
+
+# Множество подписчиков на автосигналы (храним chat_id)
+subscribers = set()
 
 
 class EURUSDProBot:
@@ -566,6 +571,10 @@ def get_main_menu():
             InlineKeyboardButton("📈 Статус", callback_data='status')
         ],
         [
+            InlineKeyboardButton("🔔 Автосигнал", callback_data='auto_on'),
+            InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')
+        ],
+        [
             InlineKeyboardButton("ℹ️ Помощь", callback_data='help'),
             InlineKeyboardButton("⚙️ Настройки", callback_data='settings')
         ]
@@ -902,6 +911,24 @@ async def handle_message(chat_id, text=None, update=None):
                 await send_signal(bot_instance, chat_id)
             elif query.data == 'status':
                 await send_status(bot_instance, chat_id)
+            elif query.data == 'auto_on':
+                subscribers.add(chat_id)
+                await bot_instance.send_message(
+                    chat_id=chat_id,
+                    text="✅ Автоматические сигналы включены! Теперь вы будете получать сигнал каждую минуту.\nДля остановки нажмите кнопку ⏹️ Стоп."
+                )
+            elif query.data == 'auto_off':
+                if chat_id in subscribers:
+                    subscribers.remove(chat_id)
+                    await bot_instance.send_message(
+                        chat_id=chat_id,
+                        text="⏹️ Автоматические сигналы остановлены."
+                    )
+                else:
+                    await bot_instance.send_message(
+                        chat_id=chat_id,
+                        text="❌ Автоматические сигналы не были включены."
+                    )
             elif query.data == 'help':
                 await show_help_menu(bot_instance, chat_id)
             elif query.data == 'settings':
@@ -931,6 +958,12 @@ async def handle_message(chat_id, text=None, update=None):
             await send_status(bot_instance, chat_id)
         elif text == '/help':
             await show_help_menu(bot_instance, chat_id)
+        elif text == '/stop':
+            if chat_id in subscribers:
+                subscribers.remove(chat_id)
+                await bot_instance.send_message(chat_id=chat_id, text="⏹️ Автоматические сигналы остановлены.")
+            else:
+                await bot_instance.send_message(chat_id=chat_id, text="❌ Автоматические сигналы не были включены.")
         elif text == '📊 Сигнал' or text == 'сигнал':
             await send_signal(bot_instance, chat_id)
         elif text == '📈 Статус' or text == 'статус':
@@ -957,6 +990,7 @@ async def send_welcome(bot_instance, chat_id):
 • Получение сигналов с анализом
 • Статус и настройки бота
 • Подробная помощь по индикаторам
+• 🔔 Автоматические сигналы каждую минуту
 
 *Бот работает 24/7 на Render.com!*
     """
@@ -1001,12 +1035,14 @@ async def send_signal(bot_instance, chat_id):
 
 async def send_status(bot_instance, chat_id):
     """Статус бота"""
+    auto_status = "включены" if chat_id in subscribers else "отключены"
     status_text = f"""
 📊 *СТАТУС ПРОФЕССИОНАЛЬНОГО БОТА*
 
 ✅ Бот работает 24/7 на Render.com
 📈 Упрощённые индикаторы активны
 💹 Последний сигнал: {'есть' if bot.last_signal else 'нет'}
+🔔 Автосигналы: {auto_status}
 ⏰ Время сервера: {datetime.now().strftime('%H:%M:%S')}
 
 *Настройки индикаторов:*
@@ -1022,6 +1058,51 @@ async def send_status(bot_instance, chat_id):
         parse_mode='Markdown'
     )
 
+
+# ========== ФОНОВАЯ ЗАДАЧА ДЛЯ АВТОСИГНАЛОВ ==========
+
+async def auto_signal_worker():
+    """Фоновая задача, отправляющая сигналы подписчикам каждую минуту"""
+    while True:
+        await asyncio.sleep(60)
+        if subscribers:
+            logger.info(f"🔄 Отправка автоматических сигналов {len(subscribers)} подписчикам")
+            for chat_id in list(subscribers):  # копируем, чтобы избежать ошибок при изменении
+                try:
+                    bot_instance = Bot(token=BOT_TOKEN)
+                    # Отправляем уведомление о начале
+                    await bot_instance.send_message(
+                        chat_id=chat_id,
+                        text="🔄 Автоматический сигнал..."
+                    )
+                    indicators = await bot.get_signal()
+                    if indicators:
+                        msg = bot.generate_message(indicators)
+                        await bot_instance.send_message(
+                            chat_id=chat_id,
+                            text=msg,
+                            parse_mode='Markdown'
+                        )
+                    else:
+                        await bot_instance.send_message(
+                            chat_id=chat_id,
+                            text="❌ Не удалось получить сигнал."
+                        )
+                except Exception as e:
+                    logger.error(f"Ошибка автосигнала для {chat_id}: {e}")
+
+
+def start_background_loop():
+    """Запускает фоновую асинхронную задачу в отдельном потоке"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(auto_signal_worker())
+
+
+# Запускаем фоновую задачу в отдельном демоническом потоке
+threading.Thread(target=start_background_loop, daemon=True).start()
+
+# ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
