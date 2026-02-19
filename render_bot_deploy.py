@@ -4,9 +4,8 @@ import json
 from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update  # ИЗМЕНЕНО: добавили классы для кнопок
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, \
-    ContextTypes  # ИЗМЕНЕНО: добавили обработчики
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import os
 import pandas as pd
 import numpy as np
@@ -171,10 +170,7 @@ class EURUSDProBot:
         macd_line = ema_fast - ema_slow
 
         # Для сигнальной линии нужна EMA от MACD за signal период.
-        # Упрощённо: возьмём последние signal значений MACD (но у нас их нет, поэтому пропустим).
-        # Для простоты вернём только линию.
-        # Вместо полноценного MACD вернём только разницу и 0 для остального.
-        # Можно улучшить, но для демо-целей сойдёт.
+        # Упрощённо: вернём только линию
         return macd_line, 0.0, 0.0
 
     # ---------- Основной расчёт индикаторов ----------
@@ -293,7 +289,7 @@ class EURUSDProBot:
                 results['ema'][period] = current_price
                 results[f'ema_{period}_signal'] = '⏺️ ОКОЛО'
 
-        # 6. Поддержка и сопротивление (оставляем как есть, без изменений)
+        # 6. Поддержка и сопротивление
         support_resistance = self.find_support_resistance(high, low, close)
         results['support_levels'] = support_resistance['supports']
         results['resistance_levels'] = support_resistance['resistances']
@@ -318,7 +314,7 @@ class EURUSDProBot:
         return results
 
     def find_support_resistance(self, high, low, close, window=5):
-        """Поиск уровней поддержки и сопротивления (без изменений)"""
+        """Поиск уровней поддержки и сопротивления"""
         supports = []
         resistances = []
 
@@ -378,7 +374,7 @@ class EURUSDProBot:
         return clustered
 
     def calculate_probability(self, indicators):
-        """Расчёт вероятности на основе индикаторов (без изменений)"""
+        """Расчёт вероятности на основе индикаторов"""
         votes_up = 0
         votes_down = 0
 
@@ -446,7 +442,7 @@ class EURUSDProBot:
         return prob_up, prob_down, confidence
 
     def generate_message(self, indicators):
-        """Генерация подробного сообщения с индикаторами (без изменений)"""
+        """Генерация подробного сообщения с индикаторами"""
         if not indicators:
             return "❌ Недостаточно данных для расчета индикаторов"
 
@@ -513,7 +509,7 @@ class EURUSDProBot:
                 signal = indicators.get(f'ema_{period}_signal', '')
                 message += f"├─ EMA({period}): `{indicators['ema'][period]:.5f}` {signal}\n"
 
-        # ИЗМЕНЕНО: Добавлены проверки на None для уровней поддержки/сопротивления
+        # Ближайшие уровни с проверкой на None
         support_str = f"`{indicators['nearest_support']:.5f}`" if indicators.get(
             'nearest_support') is not None else "`не определен`"
         resistance_str = f"`{indicators['nearest_resistance']:.5f}`" if indicators.get(
@@ -563,7 +559,7 @@ class EURUSDProBot:
 bot = EURUSDProBot()
 
 
-# ========== НОВЫЕ ФУНКЦИИ ДЛЯ КНОПОК (ДОБАВЛЕНЫ) ==========
+# ========== ФУНКЦИИ ДЛЯ СОЗДАНИЯ МЕНЮ ==========
 
 def get_main_menu():
     """Создаёт главное меню с кнопками"""
@@ -610,173 +606,27 @@ def get_settings_menu():
     return InlineKeyboardMarkup(keyboard)
 
 
-# ========== КОНЕЦ НОВЫХ ФУНКЦИЙ ==========
+# ========== ФУНКЦИИ ДЛЯ ПОКАЗА МЕНЮ ==========
 
-@app.before_request
-def before_request():
-    """Создаём event loop для каждого запроса"""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-
-@app.route('/')
-def index():
-    return """
-    <h1>🤖 EUR/USD Pro Trading Bot</h1>
-    <p>Бот с упрощёнными индикаторами работает 24/7!</p>
-    <p>Команды в Telegram:</p>
-    <ul>
-        <li><b>/signal</b> - получить сигнал со всеми индикаторами</li>
-        <li><b>/status</b> - статус бота</li>
-        <li><b>/help</b> - помощь</li>
-    </ul>
-    """
-
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'ok',
-        'timestamp': datetime.now().isoformat(),
-        'indicators_available': bot.last_signal is not None
-    })
-
-
-# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ WEBHOOK ==========
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        update_data = request.get_json()
-        logger.info(f"📨 Получено обновление от пользователя")
-
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # Создаём объект Update для обработки callback-запросов
-            if 'callback_query' in update_data:
-                # Для кнопок создаём специальный объект
-                class CallbackQuery:
-                    def __init__(self, data):
-                        self.data = data
-                        self.answer = lambda: None  # заглушка
-
-                class Update:
-                    def __init__(self, data):
-                        self.callback_query = CallbackQuery(data['callback_query']['data'])
-
-                update = Update(update_data)
-                chat_id = update_data['callback_query']['from']['id']
-                loop.run_until_complete(handle_message(chat_id, None, update))
-            elif 'message' in update_data and 'text' in update_data['message']:
-                chat_id = update_data['message']['chat']['id']
-                text = update_data['message']['text']
-                loop.run_until_complete(handle_message(chat_id, text))
-            else:
-                logger.info("Получено обновление без текстового сообщения")
-
-            loop.close()
-        except Exception as e:
-            logger.error(f"Ошибка в цикле событий: {e}")
-        finally:
-            try:
-                loop.close()
-            except:
-                pass
-        return jsonify({'status': 'ok'})
-    except Exception as e:
-        logger.error(f"❌ Ошибка в webhook: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
-# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ HANDLE_MESSAGE ==========
-async def handle_message(chat_id, text=None, update=None):
-    """Обработка сообщений с поддержкой кнопок"""
-    try:
-        bot_instance = Bot(token=BOT_TOKEN)
-
-        # Обработка callback-запросов от кнопок
-        if update and hasattr(update, 'callback_query'):
-            query = update.callback_query
-            # В реальном коде здесь нужно вызвать query.answer(), но у нас заглушка
-
-            if query.data == 'signal':
-                await send_signal(bot_instance, chat_id)
-            elif query.data == 'status':
-                await send_status(bot_instance, chat_id)
-            elif query.data == 'help':
-                await show_help_menu(bot_instance, chat_id)
-            elif query.data == 'settings':
-                await show_settings_menu(bot_instance, chat_id)
-            elif query.data == 'back_to_main':
-                await show_main_menu(bot_instance, chat_id)
-            elif query.data == 'help_indicators':
-                await send_help_indicators(bot_instance, chat_id)
-            elif query.data == 'help_trading':
-                await send_help_trading(bot_instance, chat_id)
-            elif query.data == 'help_faq':
-                await send_help_faq(bot_instance, chat_id)
-            elif query.data == 'set_rsi':
-                await edit_setting_rsi(bot_instance, chat_id)
-            elif query.data == 'set_macd':
-                await edit_setting_macd(bot_instance, chat_id)
-            elif query.data == 'set_bb':
-                await edit_setting_bb(bot_instance, chat_id)
-            return
-
-        # Обработка обычных текстовых команд
-        if text == '/start':
-            await send_welcome(bot_instance, chat_id)
-        elif text == '/signal':
-            await send_signal(bot_instance, chat_id)
-        elif text == '/status':
-            await send_status(bot_instance, chat_id)
-        elif text == '/help':
-            await send_help(bot_instance, chat_id)
-        elif text == '📊 Сигнал' or text == 'сигнал':
-            await send_signal(bot_instance, chat_id)
-        elif text == '📈 Статус' or text == 'статус':
-            await send_status(bot_instance, chat_id)
-        elif text == 'ℹ️ Помощь' or text == 'помощь':
-            await send_help(bot_instance, chat_id)
-        else:
-            await bot_instance.send_message(
-                chat_id=chat_id,
-                text="❌ Неизвестная команда. Используй кнопки меню или /help"
-            )
-    except Exception as e:
-        logger.error(f"❌ Ошибка при обработке сообщения: {e}")
-
-
-# ========== ИЗМЕНЕННАЯ ФУНКЦИЯ SEND_WELCOME ==========
-async def send_welcome(bot_instance, chat_id):
-    """Отправка приветствия с меню"""
-    welcome_text = """
-🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
-
-Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
-
-📊 *Доступные функции:*
-• Получение сигналов с анализом
-• Статус и настройки бота
-• Подробная помощь по индикаторам
-
-*Бот работает 24/7*
-    """
-
+async def show_main_menu(bot_instance, chat_id):
+    """Показывает главное меню"""
     await bot_instance.send_message(
         chat_id=chat_id,
-        text=welcome_text,
+        text="🤖 *Главное меню*\n\nВыберите действие:",
         reply_markup=get_main_menu(),
         parse_mode='Markdown'
     )
-    logger.info(f"✅ Приветствие с меню отправлено пользователю {chat_id}")
 
 
-# ========== НОВЫЕ ФУНКЦИИ ДЛЯ МЕНЮ (ДОБАВЛЕНЫ) ==========
+async def show_help_menu(bot_instance, chat_id):
+    """Показывает меню помощи"""
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text="📖 *Раздел помощи*\n\nВыберите тему:",
+        reply_markup=get_help_menu(),
+        parse_mode='Markdown'
+    )
+
 
 async def show_settings_menu(bot_instance, chat_id):
     """Показывает меню настроек"""
@@ -796,10 +646,10 @@ async def show_settings_menu(bot_instance, chat_id):
         text=settings_text,
         reply_markup=get_settings_menu(),
         parse_mode='Markdown'
-    )  # <- ЭТА СКОБКА ЗАКРЫВАЕТ send_message
+    )
 
 
-# ========== ФУНКЦИИ ДЛЯ НАСТРОЕК ==========
+# ========== ФУНКЦИИ ДЛЯ РАЗДЕЛОВ ПОМОЩИ ==========
 
 async def send_help_indicators(bot_instance, chat_id):
     """Подробная помощь по индикаторам"""
@@ -871,7 +721,7 @@ async def send_help_faq(bot_instance, chat_id):
 По запросу через команду /signal
 
 *❓ Почему нет сигнала?*
-Проверьте API ключ Twelve Data
+Проверьте API ключ Twelve Data в настройках Render
 
 *❓ Какой таймфрейм используется?*
 1 минута (M1)
@@ -880,7 +730,7 @@ async def send_help_faq(bot_instance, chat_id):
 Сигналы основаны на техническом анализе, но не гарантируют прибыль. Всегда используйте риск-менеджмент.
 
 *❓ Бот работает 24/7?*
-Да, бот запущен и работает круглосуточно
+Да, бот запущен на Render.com и работает круглосуточно
     """
 
     keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data='help')]]
@@ -891,6 +741,8 @@ async def send_help_faq(bot_instance, chat_id):
         parse_mode='Markdown'
     )
 
+
+# ========== ФУНКЦИИ ДЛЯ НАСТРОЕК ==========
 
 async def edit_setting_rsi(bot_instance, chat_id):
     """Изменение настроек RSI"""
@@ -959,7 +811,168 @@ async def edit_setting_bb(bot_instance, chat_id):
     )
 
 
-# ========== ФУНКЦИИ ОТПРАВКИ СИГНАЛОВ (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ) ==========
+# ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
+
+@app.before_request
+def before_request():
+    """Создаём event loop для каждого запроса"""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+
+@app.route('/')
+def index():
+    return """
+    <h1>🤖 EUR/USD Pro Trading Bot</h1>
+    <p>Бот с упрощёнными индикаторами работает 24/7!</p>
+    <p>Команды в Telegram:</p>
+    <ul>
+        <li><b>/start</b> - показать меню</li>
+        <li><b>/signal</b> - получить сигнал</li>
+        <li><b>/status</b> - статус бота</li>
+        <li><b>/help</b> - помощь</li>
+    </ul>
+    """
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'indicators_available': bot.last_signal is not None
+    })
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        update_data = request.get_json()
+        logger.info(f"📨 Получено обновление от пользователя")
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Создаём объект Update для обработки callback-запросов
+            if 'callback_query' in update_data:
+                # Для кнопок создаём специальный объект
+                class CallbackQuery:
+                    def __init__(self, data):
+                        self.data = data
+                        self.answer = lambda: None  # заглушка
+
+                class Update:
+                    def __init__(self, data):
+                        self.callback_query = CallbackQuery(data['callback_query']['data'])
+
+                update = Update(update_data)
+                chat_id = update_data['callback_query']['from']['id']
+                loop.run_until_complete(handle_message(chat_id, None, update))
+            elif 'message' in update_data and 'text' in update_data['message']:
+                chat_id = update_data['message']['chat']['id']
+                text = update_data['message']['text']
+                loop.run_until_complete(handle_message(chat_id, text))
+            else:
+                logger.info("Получено обновление без текстового сообщения")
+
+            loop.close()
+        except Exception as e:
+            logger.error(f"Ошибка в цикле событий: {e}")
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        logger.error(f"❌ Ошибка в webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+async def handle_message(chat_id, text=None, update=None):
+    """Обработка сообщений с поддержкой кнопок"""
+    try:
+        bot_instance = Bot(token=BOT_TOKEN)
+
+        # Обработка callback-запросов от кнопок
+        if update and hasattr(update, 'callback_query'):
+            query = update.callback_query
+
+            if query.data == 'signal':
+                await send_signal(bot_instance, chat_id)
+            elif query.data == 'status':
+                await send_status(bot_instance, chat_id)
+            elif query.data == 'help':
+                await show_help_menu(bot_instance, chat_id)
+            elif query.data == 'settings':
+                await show_settings_menu(bot_instance, chat_id)
+            elif query.data == 'back_to_main':
+                await show_main_menu(bot_instance, chat_id)
+            elif query.data == 'help_indicators':
+                await send_help_indicators(bot_instance, chat_id)
+            elif query.data == 'help_trading':
+                await send_help_trading(bot_instance, chat_id)
+            elif query.data == 'help_faq':
+                await send_help_faq(bot_instance, chat_id)
+            elif query.data == 'set_rsi':
+                await edit_setting_rsi(bot_instance, chat_id)
+            elif query.data == 'set_macd':
+                await edit_setting_macd(bot_instance, chat_id)
+            elif query.data == 'set_bb':
+                await edit_setting_bb(bot_instance, chat_id)
+            return
+
+        # Обработка обычных текстовых команд
+        if text == '/start':
+            await send_welcome(bot_instance, chat_id)
+        elif text == '/signal':
+            await send_signal(bot_instance, chat_id)
+        elif text == '/status':
+            await send_status(bot_instance, chat_id)
+        elif text == '/help':
+            await show_help_menu(bot_instance, chat_id)
+        elif text == '📊 Сигнал' or text == 'сигнал':
+            await send_signal(bot_instance, chat_id)
+        elif text == '📈 Статус' or text == 'статус':
+            await send_status(bot_instance, chat_id)
+        elif text == 'ℹ️ Помощь' or text == 'помощь':
+            await show_help_menu(bot_instance, chat_id)
+        else:
+            await bot_instance.send_message(
+                chat_id=chat_id,
+                text="❌ Неизвестная команда. Используй кнопки меню или /help"
+            )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке сообщения: {e}")
+
+
+async def send_welcome(bot_instance, chat_id):
+    """Отправка приветствия с меню"""
+    welcome_text = """
+🤖 *EUR/USD ПРОФЕССИОНАЛЬНЫЙ БОТ*
+
+Я анализирую валютную пару EUR/USD с использованием профессиональных индикаторов.
+
+📊 *Доступные функции:*
+• Получение сигналов с анализом
+• Статус и настройки бота
+• Подробная помощь по индикаторам
+
+*Бот работает 24/7
+    """
+
+    await bot_instance.send_message(
+        chat_id=chat_id,
+        text=welcome_text,
+        reply_markup=get_main_menu(),
+        parse_mode='Markdown'
+    )
+    logger.info(f"✅ Приветствие с меню отправлено пользователю {chat_id}")
+
 
 async def send_signal(bot_instance, chat_id):
     """Отправка сигнала с индикаторами"""
@@ -1013,13 +1026,6 @@ async def send_status(bot_instance, chat_id):
         parse_mode='Markdown'
     )
 
-
-async def send_help(bot_instance, chat_id):
-    """Отправка помощи (вызывает меню помощи)"""
-    await show_help_menu(bot_instance, chat_id)
-
-
-# ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
