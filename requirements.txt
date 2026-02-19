@@ -2,3 +2,4 @@ flask
 python-telegram-bot
 aiohttp
 gunicorn==21.2.0
+psycopg2-binary
