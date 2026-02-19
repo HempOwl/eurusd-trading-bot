@@ -455,22 +455,33 @@ async def send_status(bot, chat_id):
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
     while True:
-        await asyncio.sleep(300)
-        with subscribers_lock:
-            subs = list(subscribers)
-        if not subs:
-            continue
-        logger.info(f"🔄 Рассылка {len(subs)} подписчикам")
-        for uid in subs:
-            try:
-                bot = Bot(token=BOT_TOKEN)
-                ind = await get_indicators()
-                if ind:
-                    await bot.send_message(uid, generate_message(ind), parse_mode='Markdown')
-                else:
-                    await bot.send_message(uid, "❌ Ошибка получения сигнала")
-            except Exception as e:
-                logger.error(f"Ошибка для {uid}: {e}")
+        try:
+            logger.debug("⏳ Цикл автосигналов: ожидание 5 минут...")
+            await asyncio.sleep(300)  # 5 минут
+            logger.debug("⏰ Цикл проснулся, проверяем подписчиков")
+            with subscribers_lock:
+                subs = list(subscribers)
+                logger.info(f"📋 Текущие подписчики: {subs}")
+            if not subs:
+                logger.info("😴 Нет подписчиков, пропускаем рассылку")
+                continue
+            logger.info(f"🔄 Начинаю рассылку для {len(subs)} подписчиков")
+            for uid in subs:
+                try:
+                    logger.debug(f"📤 Отправка сигнала для {uid}")
+                    bot = Bot(token=BOT_TOKEN)
+                    ind = await get_indicators()
+                    if ind:
+                        await bot.send_message(uid, generate_message(ind), parse_mode='Markdown')
+                        logger.info(f"✅ Сигнал отправлен {uid}")
+                    else:
+                        await bot.send_message(uid, "❌ Ошибка получения сигнала")
+                        logger.error(f"❌ Нет индикаторов для {uid}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки для {uid}: {e}")
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
+            await asyncio.sleep(10)  # небольшая пауза перед возобновлением цикла
 
 def start_worker():
     loop = asyncio.new_event_loop()
