@@ -41,29 +41,44 @@ else:
 def load_subscribers():
     """Загружает подписчиков из БД"""
     if not conn:
+        logger.error("❌ load_subscribers: нет подключения к БД")
         return set()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id FROM subscribers")
-            return set(row[0] for row in cur.fetchall())
+            rows = cur.fetchall()
+            subs = set(row[0] for row in rows)
+            logger.info(f"✅ Загружено {len(subs)} подписчиков из БД")
+            return subs
     except Exception as e:
-        logger.error(f"Ошибка загрузки подписчиков: {e}")
+        logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
         return set()
 
 def save_subscribers(subs):
     """Сохраняет подписчиков в БД (полная перезапись)"""
     if not conn:
+        logger.error("❌ save_subscribers: нет подключения к БД")
         return
     try:
         with conn.cursor() as cur:
             # Очищаем таблицу
             cur.execute("DELETE FROM subscribers")
+            logger.debug(f"Очищена таблица subscribers")
             # Вставляем всех текущих подписчиков
             for chat_id in subs:
                 cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
+                logger.debug(f"Добавлен подписчик {chat_id}")
             conn.commit()
+            logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
     except Exception as e:
-        logger.error(f"Ошибка сохранения подписчиков: {e}")
+        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
+        # Попытка переподключения при ошибке
+        try:
+            global conn
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Переподключение к БД выполнено")
+        except:
+            logger.error("❌ Не удалось переподключиться к БД")
 
 # ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
 app = Flask(__name__)
@@ -77,8 +92,8 @@ if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 
 # Множество подписчиков (загружается из БД)
-subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
+subscribers = load_subscribers()
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
 class PriceStorage:
