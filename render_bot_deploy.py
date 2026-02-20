@@ -10,55 +10,51 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import psycopg2
 from psycopg2 import OperationalError, InterfaceError
 
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def ensure_db_connection():
-    """Проверяет, живо ли соединение с БД, и переподключается при необходимости."""
-    global conn
-    if DATABASE_URL is None:
-        logger.error("❌ DATABASE_URL не задана")
-        return False
+# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
+app = Flask(__name__)
 
-    if conn is None:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            logger.info("✅ Соединение с БД установлено (первичное)")
-        except Exception as e:
-            logger.error(f"❌ Не удалось подключиться к БД: {e}")
-            return False
-    else:
-        # Проверяем, живо ли соединение (простой запрос)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-        except (OperationalError, InterfaceError) as e:
-            logger.warning(f"⚠️ Соединение с БД потеряно: {e}. Переподключаемся...")
-            try:
-                conn.close()
-            except:
-                pass
-            try:
-                conn = psycopg2.connect(DATABASE_URL)
-                logger.info("✅ Соединение с БД восстановлено")
-            except Exception as e:
-                logger.error(f"❌ Не удалось восстановить соединение: {e}")
-                return False
-    return True
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
+DATABASE_URL = os.environ.get('DATABASE_URL')  # строка подключения к PostgreSQL
 
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не задан!")
+if not TWELVE_API_KEY:
+    logger.error("❌ TWELVE_API_KEY не задан!")
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL не задана!")
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
+# Глобальное соединение с БД
+conn = None
+
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
 def load_subscribers():
     """Загружает подписчиков из БД"""
-    global conn
+    global DATABASE_URL, conn
     if DATABASE_URL is None:
-        logger.error("❌ DATABASE_URL не задана")
+        logger.error("❌ load_subscribers: DATABASE_URL не задана")
         return set()
 
     # Если соединения нет или оно закрыто, создаём новое
     if conn is None:
         try:
             conn = psycopg2.connect(DATABASE_URL)
-            logger.info("✅ Соединение с БД установлено")
+            # Создаём таблицу, если её нет
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS subscribers (
+                        chat_id BIGINT PRIMARY KEY
+                    )
+                """)
+                conn.commit()
+            logger.info("✅ Соединение с БД установлено (первичное)")
         except Exception as e:
             logger.error(f"❌ Ошибка подключения к БД: {e}")
             return set()
@@ -70,25 +66,29 @@ def load_subscribers():
             subs = set(row[0] for row in rows)
             logger.info(f"✅ Загружено {len(subs)} подписчиков из БД")
             return subs
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
-        # Пробуем переподключиться при ошибке
+    except (OperationalError, InterfaceError) as e:
+        logger.error(f"❌ Ошибка загрузки подписчиков, пробуем переподключиться: {e}")
+        # Пробуем переподключиться
         try:
             conn = psycopg2.connect(DATABASE_URL)
-            logger.info("✅ Соединение с БД восстановлено")
             with conn.cursor() as cur:
                 cur.execute("SELECT chat_id FROM subscribers")
                 rows = cur.fetchall()
-                return set(row[0] for row in rows)
-        except:
+                subs = set(row[0] for row in rows)
+                logger.info(f"✅ После переподключения загружено {len(subs)} подписчиков")
+                return subs
+        except Exception as e2:
+            logger.error(f"❌ Не удалось переподключиться: {e2}")
             return set()
-
+    except Exception as e:
+        logger.error(f"❌ Неизвестная ошибка загрузки подписчиков: {e}")
+        return set()
 
 def save_subscribers(subs):
     """Сохраняет подписчиков в БД (полная перезапись)"""
-    global conn
+    global DATABASE_URL, conn
     if DATABASE_URL is None:
-        logger.error("❌ DATABASE_URL не задана")
+        logger.error("❌ save_subscribers: DATABASE_URL не задана")
         return
 
     if conn is None:
@@ -106,9 +106,8 @@ def save_subscribers(subs):
                 cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
             conn.commit()
             logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
-        # Пытаемся переподключиться и повторить
+    except (OperationalError, InterfaceError) as e:
+        logger.error(f"❌ Ошибка сохранения, пробуем переподключиться: {e}")
         try:
             conn = psycopg2.connect(DATABASE_URL)
             with conn.cursor() as cur:
@@ -118,24 +117,13 @@ def save_subscribers(subs):
                 conn.commit()
             logger.info("✅ Сохранено после переподключения")
         except Exception as e2:
-            logger.error(f"❌ Ошибка даже после переподключения: {e2}")
+            logger.error(f"❌ Не удалось сохранить даже после переподключения: {e2}")
+    except Exception as e:
+        logger.error(f"❌ Неизвестная ошибка сохранения: {e}")
 
-
-# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
-app = Flask(__name__)
-
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
-
-if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN не задан!")
-if not TWELVE_API_KEY:
-    logger.error("❌ TWELVE_API_KEY не задан!")
-
-# Множество подписчиков (загружается из БД)
+# Загружаем подписчиков при старте
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
-
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
 class PriceStorage:
@@ -153,139 +141,147 @@ class PriceStorage:
         self.lows.append(float(candle['low']))
         self.closes.append(float(candle['close']))
         if len(self.opens) > self.maxlen:
-            self.opens.pop(0);
-            self.highs.pop(0);
-            self.lows.pop(0);
+            self.opens.pop(0)
+            self.highs.pop(0)
+            self.lows.pop(0)
             self.closes.pop(0)
 
     def clear(self):
-        self.opens.clear();
-        self.highs.clear();
-        self.lows.clear();
+        self.opens.clear()
+        self.highs.clear()
+        self.lows.clear()
         self.closes.clear()
-
 
 price_storage = PriceStorage()
 
-
 # ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
 def sma(data, period):
-    if len(data) < period: return data[-1]
+    if len(data) < period:
+        return data[-1]
     return sum(data[-period:]) / period
 
-
 def ema(data, period):
-    if len(data) < period: return data[-1]
+    if len(data) < period:
+        return data[-1]
     multiplier = 2 / (period + 1)
-    ema = sum(data[-period:]) / period
-    for price in data[-period + 1:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
-
+    ema_val = sum(data[-period:]) / period
+    for price in data[-period+1:]:
+        ema_val = (price - ema_val) * multiplier + ema_val
+    return ema_val
 
 def rsi(data, period=14):
-    if len(data) < period + 1: return 50.0
+    if len(data) < period + 1:
+        return 50.0
     gains, losses = [], []
     for i in range(1, period + 1):
-        change = data[-i] - data[-i - 1]
+        change = data[-i] - data[-i-1]
         if change > 0:
-            gains.append(change);
+            gains.append(change)
             losses.append(0.0)
         else:
-            gains.append(0.0);
+            gains.append(0.0)
             losses.append(abs(change))
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
-    if avg_loss == 0: return 100.0
-    return 100 - (100 / (1 + avg_gain / avg_loss))
-
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
 def bbands(data, period=20, std=2):
     if len(data) < period:
-        m = data[-1];
+        m = data[-1]
         return m * 1.02, m, m * 0.98
     m = sum(data[-period:]) / period
     variance = sum((x - m) ** 2 for x in data[-period:]) / period
     s = variance ** 0.5
     return m + std * s, m, m - std * s
 
-
 def macd(data, fast=12, slow=26):
-    if len(data) < slow: return 0.0
+    if len(data) < slow:
+        return 0.0
     return ema(data, fast) - ema(data, slow)
-
 
 def find_support_resistance(high, low, close, window=5):
     supports, resistances = [], []
     n = len(close)
     for i in range(window, n - window):
-        if all(low[i] <= low[i - j] for j in range(1, window + 1)) and all(
-                low[i] <= low[i + j] for j in range(1, window + 1)):
+        if all(low[i] <= low[i-j] for j in range(1, window+1)) and \
+           all(low[i] <= low[i+j] for j in range(1, window+1)):
             supports.append(low[i])
-        if all(high[i] >= high[i - j] for j in range(1, window + 1)) and all(
-                high[i] >= high[i + j] for j in range(1, window + 1)):
+        if all(high[i] >= high[i-j] for j in range(1, window+1)) and \
+           all(high[i] >= high[i+j] for j in range(1, window+1)):
             resistances.append(high[i])
 
     def cluster(levels, thr=0.0005):
-        if not levels: return []
+        if not levels:
+            return []
         levels.sort()
         cl = [levels[0]]
         res = []
         for lev in levels[1:]:
-            if abs(lev - sum(cl) / len(cl)) < thr:
+            if abs(lev - sum(cl)/len(cl)) < thr:
                 cl.append(lev)
             else:
-                res.append(sum(cl) / len(cl))
+                res.append(sum(cl)/len(cl))
                 cl = [lev]
-        res.append(sum(cl) / len(cl))
+        res.append(sum(cl)/len(cl))
         return res
 
     supports = cluster(supports)
     resistances = cluster(resistances)
     cur = close[-1]
-    ns = None;
+    ns = None
     nr = None
     for s in supports:
-        if s < cur: ns = s
+        if s < cur:
+            ns = s
     for r in resistances:
         if r > cur:
             nr = r
             break
     return supports[-3:], resistances[-3:], ns, nr
 
-
 def calculate_probability(ind):
-    up = down = 0
-    if ind.get('rsi', 50) < 30:
+    up = 0
+    down = 0
+    # RSI
+    rsi_val = ind.get('rsi', 50)
+    if rsi_val < 30:
         up += 3
-    elif ind.get('rsi', 50) > 70:
+    elif rsi_val > 70:
         down += 3
-    elif ind.get('rsi', 50) > 50:
+    elif rsi_val > 50:
         up += 1
     else:
         down += 1
-    if 'macd_trend' in ind:
-        if 'БЫЧИЙ' in ind['macd_trend']:
-            up += 2
-        elif 'МЕДВЕЖИЙ' in ind['macd_trend']:
-            down += 2
-    if 'bb_signal' in ind:
-        if 'ПЕРЕПРОДАННОСТЬ' in ind['bb_signal']:
-            up += 2
-        elif 'ПЕРЕКУПЛЕННОСТЬ' in ind['bb_signal']:
-            down += 2
+    # MACD
+    macd_trend = ind.get('macd_trend', '')
+    if 'БЫЧИЙ' in macd_trend:
+        up += 2
+    elif 'МЕДВЕЖИЙ' in macd_trend:
+        down += 2
+    # BB
+    bb_signal = ind.get('bb_signal', '')
+    if 'ПЕРЕПРОДАННОСТЬ' in bb_signal:
+        up += 2
+    elif 'ПЕРЕКУПЛЕННОСТЬ' in bb_signal:
+        down += 2
+    # SMA
     for p in [5, 10, 20, 50]:
         sig = ind.get(f'sma_{p}_signal', '')
         if 'ВЫШЕ' in sig:
             up += 1
         elif 'НИЖЕ' in sig:
             down += 1
+    # EMA
     for p in [5, 10, 20]:
         sig = ind.get(f'ema_{p}_signal', '')
         if 'ВЫШЕ' in sig:
             up += 1
         elif 'НИЖЕ' in sig:
             down += 1
+    # S/R
     if ind.get('nearest_support') and ind.get('nearest_resistance'):
         if ind['distance_to_support'] < ind['distance_to_resistance']:
             up += 1
@@ -297,27 +293,33 @@ def calculate_probability(ind):
         prob_down = round((down / total) * 100, 1)
         conf = round(abs(up - down) / total * 100, 1)
     else:
-        prob_up = prob_down = 50.0;
+        prob_up = prob_down = 50.0
         conf = 0.0
     return prob_up, prob_down, conf
 
-
 def generate_message(ind):
-    if not ind: return "❌ Нет данных"
-    price = ind['price'];
-    up = ind['prob_up'];
-    down = ind['prob_down'];
+    if not ind:
+        return "❌ Нет данных"
+    price = ind['price']
+    up = ind['prob_up']
+    down = ind['prob_down']
     conf = ind['confidence']
     if up > down + 10 and conf > 50:
-        rec = "📈 СИЛЬНАЯ ПОКУПКА"; emoji = "🟢"
+        rec = "📈 СИЛЬНАЯ ПОКУПКА"
+        emoji = "🟢"
     elif up > down:
-        rec = "📈 ПОКУПКА"; emoji = "🟢"
+        rec = "📈 ПОКУПКА"
+        emoji = "🟢"
     elif down > up + 10 and conf > 50:
-        rec = "📉 СИЛЬНАЯ ПРОДАЖА"; emoji = "🔴"
+        rec = "📉 СИЛЬНАЯ ПРОДАЖА"
+        emoji = "🔴"
     elif down > up:
-        rec = "📉 ПРОДАЖА"; emoji = "🔴"
+        rec = "📉 ПРОДАЖА"
+        emoji = "🔴"
     else:
-        rec = "⏸️ ОЖИДАНИЕ"; emoji = "⚪"
+        rec = "⏸️ ОЖИДАНИЕ"
+        emoji = "⚪"
+
     msg = f"""{emoji} *ПРОФЕССИОНАЛЬНЫЙ АНАЛИЗ EUR/USD* {emoji}
 ⏰ {ind['timestamp']}
 💰 *Цена:* `{price:.5f}`
@@ -372,11 +374,15 @@ def generate_message(ind):
     msg += f"\n#{'BUY' if up > down else 'SELL'} #EURUSD"
     return msg
 
-
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 async def fetch_candles(api_key, bars=50):
     url = "https://api.twelvedata.com/time_series"
-    params = {'symbol': 'EUR/USD', 'interval': '1min', 'outputsize': bars, 'apikey': api_key}
+    params = {
+        'symbol': 'EUR/USD',
+        'interval': '1min',
+        'outputsize': bars,
+        'apikey': api_key
+    }
     try:
         async with aiohttp.ClientSession() as sess:
             async with sess.get(url, params=params) as resp:
@@ -387,7 +393,6 @@ async def fetch_candles(api_key, bars=50):
         logger.error(f"fetch error: {e}")
     return None
 
-
 async def update_prices():
     candles = await fetch_candles(TWELVE_API_KEY, 50)
     if candles:
@@ -397,13 +402,12 @@ async def update_prices():
         return True
     return False
 
-
 async def get_indicators():
     if len(price_storage.closes) < 20:
         if not await update_prices():
             return None
-    c = price_storage.closes;
-    h = price_storage.highs;
+    c = price_storage.closes
+    h = price_storage.highs
     l = price_storage.lows
     cur = c[-1]
     ind = {}
@@ -423,8 +427,8 @@ async def get_indicators():
     ind['macd_trend'] = 'БЫЧИЙ СИГНАЛ' if macd_line > 0 else 'МЕДВЕЖИЙ СИГНАЛ' if macd_line < 0 else 'НЕЙТРАЛЬНО'
     # BB
     upper, mid, lower = bbands(c, 20, 2)
-    ind['bb_upper'] = upper;
-    ind['bb_middle'] = mid;
+    ind['bb_upper'] = upper
+    ind['bb_middle'] = mid
     ind['bb_lower'] = lower
     ind['bb_width'] = ((upper - lower) / mid) * 100
     if cur >= upper:
@@ -463,9 +467,9 @@ async def get_indicators():
             ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
     # S/R
     sup, res, ns, nr = find_support_resistance(h, l, c)
-    ind['support_levels'] = sup;
+    ind['support_levels'] = sup
     ind['resistance_levels'] = res
-    ind['nearest_support'] = ns;
+    ind['nearest_support'] = ns
     ind['nearest_resistance'] = nr
     ind['distance_to_support'] = (cur - ns) * 10000 if ns else 0
     ind['distance_to_resistance'] = (nr - cur) * 10000 if nr else 0
@@ -475,7 +479,6 @@ async def get_indicators():
     ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
     price_storage.last_signal = ind
     return ind
-
 
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
@@ -489,7 +492,6 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-
 def help_menu():
     kb = [
         [InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
@@ -498,7 +500,6 @@ def help_menu():
          InlineKeyboardButton("◀️ Назад", callback_data='back')]
     ]
     return InlineKeyboardMarkup(kb)
-
 
 def settings_menu():
     kb = [
@@ -509,7 +510,6 @@ def settings_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
@@ -518,16 +518,13 @@ def before_request():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-
 @app.route('/')
 def index():
     return "<h1>EUR/USD Pro Bot</h1><p>Running</p>"
 
-
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'subscribers': len(subscribers)})
-
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -549,7 +546,6 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({'ok': False}), 500
-
 
 async def handle_callback(chat_id, cb):
     bot = Bot(token=BOT_TOKEN)
@@ -592,7 +588,6 @@ async def handle_callback(chat_id, cb):
     else:
         await bot.send_message(chat_id, "❓ Неизвестная команда")
 
-
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
@@ -612,7 +607,6 @@ async def handle_message(chat_id, text):
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
-
 async def send_signal(bot, chat_id):
     await bot.send_message(chat_id, "🔄 Анализирую...")
     ind = await get_indicators()
@@ -621,39 +615,30 @@ async def send_signal(bot, chat_id):
         return
     await bot.send_message(chat_id, generate_message(ind), parse_mode='Markdown')
 
-
 async def send_status(bot, chat_id):
     with subscribers_lock:
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nСвечей: {len(price_storage.closes)}")
-
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
     while True:
         try:
-            logger.debug("⏳ Цикл автосигналов: ожидание 5 минут...")
             await asyncio.sleep(300)  # 5 минут
-            logger.debug("⏰ Цикл проснулся, проверяем подписчиков")
-
-            # Принудительная загрузка из БД
+            # Принудительная загрузка из БД перед рассылкой
             with subscribers_lock:
                 fresh_subs = load_subscribers()
-                # Обновляем глобальное множество
                 subscribers.clear()
                 subscribers.update(fresh_subs)
                 subs = list(subscribers)
                 logger.info(f"📋 Загружено из БД: {subs}")
-
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
                 continue
-
             logger.info(f"🔄 Начинаю рассылку для {len(subs)} подписчиков")
             for uid in subs:
                 try:
-                    logger.debug(f"📤 Отправка сигнала для {uid}")
                     bot = Bot(token=BOT_TOKEN)
                     ind = await get_indicators()
                     if ind:
@@ -668,12 +653,10 @@ async def auto_worker():
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
 
-
 def start_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
-
 
 threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")
