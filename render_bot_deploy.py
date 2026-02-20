@@ -46,10 +46,23 @@ def ensure_db_connection():
 
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
 def load_subscribers():
     """Загружает подписчиков из БД"""
-    if not ensure_db_connection():
+    global conn
+    if DATABASE_URL is None:
+        logger.error("❌ DATABASE_URL не задана")
         return set()
+
+    # Если соединения нет или оно закрыто, создаём новое
+    if conn is None:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Соединение с БД установлено")
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к БД: {e}")
+            return set()
+
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id FROM subscribers")
@@ -59,46 +72,53 @@ def load_subscribers():
             return subs
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
-        return set()
-
-def save_subscribers(subs):
-    """Сохраняет подписчиков в БД (полная перезапись)"""
-    if not ensure_db_connection():
-        logger.error("❌ save_subscribers: нет подключения к БД")
-        return
-    try:
-        with conn.cursor() as cur:
-            # Очищаем таблицу
-            cur.execute("DELETE FROM subscribers")
-            logger.debug("Очищена таблица subscribers")
-            # Вставляем всех текущих подписчиков
-            for chat_id in subs:
-                cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
-                logger.debug(f"Добавлен подписчик {chat_id}")
-            conn.commit()
-            logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
+        # Пробуем переподключиться при ошибке
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Соединение с БД восстановлено")
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id FROM subscribers")
+                rows = cur.fetchall()
+                return set(row[0] for row in rows)
+        except:
+            return set()
 
 
 def save_subscribers(subs):
     """Сохраняет подписчиков в БД (полная перезапись)"""
-    if not conn:
-        logger.error("❌ save_subscribers: нет подключения к БД")
+    global conn
+    if DATABASE_URL is None:
+        logger.error("❌ DATABASE_URL не задана")
         return
+
+    if conn is None:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Соединение с БД установлено")
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения к БД: {e}")
+            return
+
     try:
         with conn.cursor() as cur:
-            # Очищаем таблицу
             cur.execute("DELETE FROM subscribers")
-            logger.debug("Очищена таблица subscribers")
-            # Вставляем всех текущих подписчиков
             for chat_id in subs:
                 cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
-                logger.debug(f"Добавлен подписчик {chat_id}")
             conn.commit()
             logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
+        # Пытаемся переподключиться и повторить
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM subscribers")
+                for chat_id in subs:
+                    cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
+                conn.commit()
+            logger.info("✅ Сохранено после переподключения")
+        except Exception as e2:
+            logger.error(f"❌ Ошибка даже после переподключения: {e2}")
 
 
 # ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
