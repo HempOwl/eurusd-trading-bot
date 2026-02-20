@@ -7,34 +7,76 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+import psycopg2
+from psycopg2.extras import Json
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# ========== КОНФИГУРАЦИЯ ==========
-app = Flask(__name__)
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
-if not BOT_TOKEN or not TWELVE_API_KEY:
-    logger.error("❌ BOT_TOKEN или TWELVE_API_KEY не заданы!")
-
-SUBSCRIBERS_FILE = "subscribers.json"
-
-def load_subscribers():
+# ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ==========
+DATABASE_URL = os.environ.get('DATABASE_URL')
+conn = None
+if DATABASE_URL:
     try:
-        with open(SUBSCRIBERS_FILE, 'r') as f:
-            return set(json.load(f))
-    except:
+        conn = psycopg2.connect(DATABASE_URL)
+        # Создаём таблицу, если её нет
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS subscribers (
+                    chat_id BIGINT PRIMARY KEY
+                )
+            """)
+            conn.commit()
+        logger.info("✅ Подключение к БД установлено")
+    except Exception as e:
+        logger.error(f"❌ Ошибка подключения к БД: {e}")
+else:
+    logger.error("❌ DATABASE_URL не задана, подписчики не будут сохраняться!")
+
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
+def load_subscribers():
+    """Загружает подписчиков из БД"""
+    if not conn:
+        return set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM subscribers")
+            return set(row[0] for row in cur.fetchall())
+    except Exception as e:
+        logger.error(f"Ошибка загрузки подписчиков: {e}")
         return set()
 
 def save_subscribers(subs):
+    """Сохраняет подписчиков в БД (полная перезапись)"""
+    if not conn:
+        return
     try:
-        with open(SUBSCRIBERS_FILE, 'w') as f:
-            json.dump(list(subs), f)
+        with conn.cursor() as cur:
+            # Очищаем таблицу
+            cur.execute("DELETE FROM subscribers")
+            # Вставляем всех текущих подписчиков
+            for chat_id in subs:
+                cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
+            conn.commit()
     except Exception as e:
         logger.error(f"Ошибка сохранения подписчиков: {e}")
 
+# ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
+app = Flask(__name__)
+
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
+
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не задан!")
+if not TWELVE_API_KEY:
+    logger.error("❌ TWELVE_API_KEY не задан!")
+
+# Множество подписчиков (загружается из БД)
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
 
@@ -481,7 +523,7 @@ async def auto_worker():
                     logger.error(f"❌ Ошибка отправки для {uid}: {e}")
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
-            await asyncio.sleep(10)  # небольшая пауза перед возобновлением цикла
+            await asyncio.sleep(10)
 
 def start_worker():
     loop = asyncio.new_event_loop()
