@@ -465,6 +465,27 @@ async def get_indicators():
             ind[f'ema_{p}_signal'] = '⬇️ НИЖЕ'
         else:
             ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
+
+    async def fetch_last_candle(api_key):
+        """Получает последнюю свечу EUR/USD (только что закрывшуюся)"""
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            'symbol': 'EUR/USD',
+            'interval': '1min',
+            'outputsize': 1,
+            'apikey': api_key
+        }
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        values = data.get('values')
+                        if values:
+                            return values[0]  # последняя свеча
+        except Exception as e:
+            logger.error(f"fetch_last_candle error: {e}")
+        return None
     # S/R
     sup, res, ns, nr = find_support_resistance(h, l, c)
     ind['support_levels'] = sup
@@ -626,20 +647,35 @@ async def auto_worker():
     while True:
         try:
             await asyncio.sleep(300)  # 5 минут
-            # Принудительная загрузка из БД перед рассылкой
+
+            # === ОБНОВЛЕНИЕ ДАННЫХ ===
+            # Получаем последнюю свечу с биржи
+            new_candle = await fetch_last_candle(TWELVE_API_KEY)
+            if new_candle:
+                # Добавляем свечу в хранилище (старая автоматически удалится, если превышен лимит)
+                price_storage.add_candle(new_candle)
+                logger.info(f"✅ Добавлена новая свеча: {new_candle.get('datetime')} = {new_candle.get('close')}")
+            else:
+                logger.warning("⚠️ Не удалось получить новую свечу, сигнал будет на старых данных")
+
+            # === ЗАГРУЗКА ПОДПИСЧИКОВ ИЗ БД ===
             with subscribers_lock:
                 fresh_subs = load_subscribers()
                 subscribers.clear()
                 subscribers.update(fresh_subs)
                 subs = list(subscribers)
-                logger.info(f"📋 Загружено из БД: {subs}")
+                logger.info(f"📋 Подписчики: {subs}")
+
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
                 continue
-            logger.info(f"🔄 Начинаю рассылку для {len(subs)} подписчиков")
+
+            # === РАССЫЛКА СИГНАЛОВ ===
+            logger.info(f"🔄 Рассылка для {len(subs)} подписчиков")
             for uid in subs:
                 try:
                     bot = Bot(token=BOT_TOKEN)
+                    # Получаем свежие индикаторы на обновлённых данных
                     ind = await get_indicators()
                     if ind:
                         await bot.send_message(uid, generate_message(ind), parse_mode='Markdown')
@@ -652,6 +688,7 @@ async def auto_worker():
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
+
 
 def start_worker():
     loop = asyncio.new_event_loop()
