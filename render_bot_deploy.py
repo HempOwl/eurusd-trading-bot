@@ -8,40 +8,47 @@ from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import psycopg2
-from psycopg2.extras import Json
+from psycopg2 import OperationalError, InterfaceError
 
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
-# ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ==========
-DATABASE_URL = os.environ.get('DATABASE_URL')
-conn = None
-if DATABASE_URL:
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        # Создаём таблицу, если её нет
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS subscribers (
-                    chat_id BIGINT PRIMARY KEY
-                )
-            """)
-            conn.commit()
-        logger.info("✅ Подключение к БД установлено")
-    except Exception as e:
-        logger.error(f"❌ Ошибка подключения к БД: {e}")
-else:
-    logger.error("❌ DATABASE_URL не задана, подписчики не будут сохраняться!")
+def ensure_db_connection():
+    """Проверяет, живо ли соединение с БД, и переподключается при необходимости."""
+    global conn
+    if DATABASE_URL is None:
+        logger.error("❌ DATABASE_URL не задана")
+        return False
+
+    if conn is None:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            logger.info("✅ Соединение с БД установлено (первичное)")
+        except Exception as e:
+            logger.error(f"❌ Не удалось подключиться к БД: {e}")
+            return False
+    else:
+        # Проверяем, живо ли соединение (простой запрос)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except (OperationalError, InterfaceError) as e:
+            logger.warning(f"⚠️ Соединение с БД потеряно: {e}. Переподключаемся...")
+            try:
+                conn.close()
+            except:
+                pass
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                logger.info("✅ Соединение с БД восстановлено")
+            except Exception as e:
+                logger.error(f"❌ Не удалось восстановить соединение: {e}")
+                return False
+    return True
 
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
 def load_subscribers():
     """Загружает подписчиков из БД"""
-    if not conn:
+    if not ensure_db_connection():
         return set()
     try:
         with conn.cursor() as cur:
@@ -53,6 +60,25 @@ def load_subscribers():
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
         return set()
+
+def save_subscribers(subs):
+    """Сохраняет подписчиков в БД (полная перезапись)"""
+    if not ensure_db_connection():
+        logger.error("❌ save_subscribers: нет подключения к БД")
+        return
+    try:
+        with conn.cursor() as cur:
+            # Очищаем таблицу
+            cur.execute("DELETE FROM subscribers")
+            logger.debug("Очищена таблица subscribers")
+            # Вставляем всех текущих подписчиков
+            for chat_id in subs:
+                cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
+                logger.debug(f"Добавлен подписчик {chat_id}")
+            conn.commit()
+            logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
 
 
 def save_subscribers(subs):
