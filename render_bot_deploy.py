@@ -408,7 +408,7 @@ async def fetch_last_candle(api_key):
                     data = await resp.json()
                     values = data.get('values')
                     if values:
-                        return values[0]  # последняя свеча
+                        return values[0]
     except Exception as e:
         logger.error(f"fetch_last_candle error: {e}")
     return None
