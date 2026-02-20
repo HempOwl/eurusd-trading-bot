@@ -392,7 +392,26 @@ async def fetch_candles(api_key, bars=50):
     except Exception as e:
         logger.error(f"fetch error: {e}")
     return None
-
+async def fetch_last_candle(api_key):
+    """Получает последнюю свечу EUR/USD (только что закрывшуюся)"""
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        'symbol': 'EUR/USD',
+        'interval': '1min',
+        'outputsize': 1,
+        'apikey': api_key
+    }
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    values = data.get('values')
+                    if values:
+                        return values[0]  # последняя свеча
+    except Exception as e:
+        logger.error(f"fetch_last_candle error: {e}")
+    return None
 async def update_prices():
     candles = await fetch_candles(TWELVE_API_KEY, 100)
     if candles:
