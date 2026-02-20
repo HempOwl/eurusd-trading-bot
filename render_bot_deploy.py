@@ -63,7 +63,7 @@ def save_subscribers(subs):
         with conn.cursor() as cur:
             # Очищаем таблицу
             cur.execute("DELETE FROM subscribers")
-            logger.debug(f"Очищена таблица subscribers")
+            logger.debug("Очищена таблица subscribers")
             # Вставляем всех текущих подписчиков
             for chat_id in subs:
                 cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
@@ -72,13 +72,7 @@ def save_subscribers(subs):
             logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
-        # Попытка переподключения при ошибке
-        try:
-            global conn
-            conn = psycopg2.connect(DATABASE_URL)
-            logger.info("✅ Переподключение к БД выполнено")
-        except:
-            logger.error("❌ Не удалось переподключиться к БД")
+        # Не пытаемся переподключиться здесь, чтобы избежать проблем с global
 
 # ========== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ==========
 app = Flask(__name__)
