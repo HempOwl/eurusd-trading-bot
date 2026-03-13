@@ -67,7 +67,7 @@ subscribers_lock = threading.Lock()
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
 class PriceStorage:
-    def __init__(self, maxlen=100):
+    def __init__(self, maxlen=250):
         self.maxlen = maxlen
         self.opens = []
         self.highs = []
