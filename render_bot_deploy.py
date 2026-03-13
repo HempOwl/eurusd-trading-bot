@@ -28,6 +28,9 @@ if not TWELVE_API_KEY:
 
 # Файл для хранения подписчиков
 SUBSCRIBERS_FILE = "subscribers.json"
+# Логируем полный путь для отладки
+full_path = os.path.abspath(SUBSCRIBERS_FILE)
+logger.info(f"📁 Путь к файлу подписчиков: {full_path}")
 
 def load_subscribers():
     """Загружает подписчиков из файла."""
@@ -36,12 +39,12 @@ def load_subscribers():
             with open(SUBSCRIBERS_FILE, 'r') as f:
                 data = json.load(f)
                 subs = set(data)
-                logger.info(f"📂 Загружено подписчиков из файла: {len(subs)}")
+                logger.info(f"📂 Файл найден, загружено подписчиков: {len(subs)}")
                 return subs
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки подписчиков из файла: {e}")
     else:
-        logger.info("📂 Файл подписчиков не найден, начинаем с пустого множества")
+        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует (путь: {full_path})")
     return set()
 
 def save_subscribers(subs):
@@ -49,7 +52,12 @@ def save_subscribers(subs):
     try:
         with open(SUBSCRIBERS_FILE, 'w') as f:
             json.dump(list(subs), f)
-        logger.info(f"💾 Сохранено подписчиков в файл: {len(subs)}")
+        logger.info(f"💾 Сохранено подписчиков в файл: {len(subs)} (путь: {full_path})")
+        # Проверим, что файл действительно создался
+        if os.path.exists(SUBSCRIBERS_FILE):
+            logger.info(f"✅ Файл успешно создан, размер: {os.path.getsize(SUBSCRIBERS_FILE)} байт")
+        else:
+            logger.error(f"❌ Файл не создался после сохранения!")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения подписчиков в файл: {e}")
 
@@ -513,7 +521,7 @@ async def handle_callback(chat_id, cb):
     elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
-            save_subscribers(subscribers)  # <-- теперь с логом внутри функции
+            save_subscribers(subscribers)
             logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
@@ -584,10 +592,16 @@ async def auto_worker():
     while True:
         try:
             await asyncio.sleep(120)  # 5 минут
-            # Получаем список подписчиков
+
+            # ПРИНУДИТЕЛЬНО загружаем подписчиков из файла, чтобы убедиться, что они не потеряны
+            file_subs = load_subscribers()
             with subscribers_lock:
+                if file_subs != subscribers:
+                    logger.warning(f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
+                    subscribers.clear()
+                    subscribers.update(file_subs)
                 subs = list(subscribers)
-                logger.info(f"📋 Подписчиков: {len(subs)}")
+                logger.info(f"📋 Подписчиков в памяти: {len(subs)}")
 
             # Обновляем последнюю свечу
             new_candle = await fetch_last_candle(TWELVE_API_KEY)
