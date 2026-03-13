@@ -591,7 +591,7 @@ async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
     while True:
         try:
-            await asyncio.sleep(120)  # 5 минут
+            await asyncio.sleep(290)  # 5 минут
 
             # ПРИНУДИТЕЛЬНО загружаем подписчиков из файла, чтобы убедиться, что они не потеряны
             file_subs = load_subscribers()
