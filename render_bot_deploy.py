@@ -7,8 +7,6 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-import psycopg2
-from psycopg2 import OperationalError, InterfaceError
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -596,13 +594,12 @@ async def handle_callback(chat_id, cb):
     elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
-            save_subscribers(subscribers)
+
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
         with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
-                save_subscribers(subscribers)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
                 logger.info(f"⏹️ Подписчик {chat_id} удалён")
             else:
@@ -640,7 +637,6 @@ async def handle_message(chat_id, text):
         with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
-                save_subscribers(subscribers)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
             else:
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
@@ -667,6 +663,9 @@ async def auto_worker():
         try:
             await asyncio.sleep(300)  # 5 минут
 
+            with subscribers_lock:
+                subs = list(subscribers)
+                logger.info(f"📋 Подписчики: {subs}")
             # === ОБНОВЛЕНИЕ ДАННЫХ ===
             # Получаем последнюю свечу с биржи
             new_candle = await fetch_last_candle(TWELVE_API_KEY)
