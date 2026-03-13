@@ -476,14 +476,15 @@ def webhook():
         return jsonify({'ok': False}), 500
 
 async def handle_callback(chat_id, cb):
-    bot = Bot(token=BOT_TOKEN)
+    logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     if cb == 'signal':
         await send_signal(bot, chat_id)
     elif cb == 'status':
         await send_status(bot, chat_id)
-    elif cb == 'auto_on':
+        elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
+            logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
         with subscribers_lock:
@@ -551,7 +552,9 @@ async def auto_worker():
     while True:
         try:
             await asyncio.sleep(300)  # 5 минут
-
+            with subscribers_lock:
+                subs = list(subscribers)
+                logger.info(f"📋 Текущие подписчики в памяти: {subs}")
             # Получаем список подписчиков (из памяти)
             with subscribers_lock:
                 subs = list(subscribers)
