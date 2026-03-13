@@ -35,9 +35,13 @@ def load_subscribers():
         try:
             with open(SUBSCRIBERS_FILE, 'r') as f:
                 data = json.load(f)
-                return set(data)
+                subs = set(data)
+                logger.info(f"📂 Загружено подписчиков из файла: {len(subs)}")
+                return subs
         except Exception as e:
-            logger.error(f"Ошибка загрузки подписчиков: {e}")
+            logger.error(f"❌ Ошибка загрузки подписчиков из файла: {e}")
+    else:
+        logger.info("📂 Файл подписчиков не найден, начинаем с пустого множества")
     return set()
 
 def save_subscribers(subs):
@@ -45,8 +49,9 @@ def save_subscribers(subs):
     try:
         with open(SUBSCRIBERS_FILE, 'w') as f:
             json.dump(list(subs), f)
+        logger.info(f"💾 Сохранено подписчиков в файл: {len(subs)}")
     except Exception as e:
-        logger.error(f"Ошибка сохранения подписчиков: {e}")
+        logger.error(f"❌ Ошибка сохранения подписчиков в файл: {e}")
 
 # Множество подписчиков (загружается из файла)
 subscribers = load_subscribers()
@@ -508,7 +513,7 @@ async def handle_callback(chat_id, cb):
     elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
-            save_subscribers(subscribers)
+            save_subscribers(subscribers)  # <-- теперь с логом внутри функции
             logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
