@@ -67,7 +67,7 @@ subscribers_lock = threading.Lock()
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
 class PriceStorage:
-    def __init__(self, maxlen=250):
+    def __init__(self, maxlen=200):
         self.maxlen = maxlen
         self.opens = []
         self.highs = []
@@ -355,7 +355,7 @@ async def fetch_last_candle(api_key):
     return None
 
 async def update_prices():
-    candles = await fetch_candles(TWELVE_API_KEY, 100)
+    candles = await fetch_candles(TWELVE_API_KEY, 200)
     if candles:
         price_storage.clear()
         for c in candles[::-1]:
