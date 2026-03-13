@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import threading
+import json
 from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
@@ -25,8 +26,30 @@ if not BOT_TOKEN:
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 
-# Множество подписчиков (хранится только в памяти)
-subscribers = set()
+# Файл для хранения подписчиков
+SUBSCRIBERS_FILE = "subscribers.json"
+
+def load_subscribers():
+    """Загружает подписчиков из файла."""
+    if os.path.exists(SUBSCRIBERS_FILE):
+        try:
+            with open(SUBSCRIBERS_FILE, 'r') as f:
+                data = json.load(f)
+                return set(data)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки подписчиков: {e}")
+    return set()
+
+def save_subscribers(subs):
+    """Сохраняет подписчиков в файл."""
+    try:
+        with open(SUBSCRIBERS_FILE, 'w') as f:
+            json.dump(list(subs), f)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения подписчиков: {e}")
+
+# Множество подписчиков (загружается из файла)
+subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
@@ -477,7 +500,7 @@ def webhook():
 
 async def handle_callback(chat_id, cb):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
-    bot = Bot(token=BOT_TOKEN)  # создаём экземпляр бота
+    bot = Bot(token=BOT_TOKEN)
     if cb == 'signal':
         await send_signal(bot, chat_id)
     elif cb == 'status':
@@ -485,12 +508,14 @@ async def handle_callback(chat_id, cb):
     elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
+            save_subscribers(subscribers)
             logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
         with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
+                save_subscribers(subscribers)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
                 logger.info(f"⏹️ Подписчик {chat_id} удалён")
             else:
@@ -528,6 +553,7 @@ async def handle_message(chat_id, text):
         with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
+                save_subscribers(subscribers)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
             else:
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
@@ -552,7 +578,7 @@ async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
     while True:
         try:
-            await asyncio.sleep(300)  # 5 минут
+            await asyncio.sleep(120)  # 5 минут
             # Получаем список подписчиков
             with subscribers_lock:
                 subs = list(subscribers)
