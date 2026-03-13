@@ -477,11 +477,12 @@ def webhook():
 
 async def handle_callback(chat_id, cb):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
+    bot = Bot(token=BOT_TOKEN)
     if cb == 'signal':
         await send_signal(bot, chat_id)
     elif cb == 'status':
         await send_status(bot, chat_id)
-        elif cb == 'auto_on':
+    elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
             logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
@@ -494,7 +495,7 @@ async def handle_callback(chat_id, cb):
                 logger.info(f"⏹️ Подписчик {chat_id} удалён")
             else:
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
-    elif cb == 'help':
+    # ... остальные elif ...
         await bot.send_message(chat_id, "📖 Раздел помощи", reply_markup=help_menu())
     elif cb == 'settings':
         await bot.send_message(chat_id, "⚙️ Настройки", reply_markup=settings_menu())
