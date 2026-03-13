@@ -1,0 +1,4 @@
+.env 
+config.json 
+*.log 
+start_control_bot.bat 
