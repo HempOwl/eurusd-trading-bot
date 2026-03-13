@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import json
 import os
 import threading
 from datetime import datetime
@@ -20,107 +19,14 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
-DATABASE_URL = os.environ.get('DATABASE_URL')  # строка подключения к PostgreSQL
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
-if not DATABASE_URL:
-    logger.error("❌ DATABASE_URL не задана!")
 
-# Глобальное соединение с БД
-conn = None
-
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ ==========
-def load_subscribers():
-    """Загружает подписчиков из БД"""
-    global DATABASE_URL, conn
-    if DATABASE_URL is None:
-        logger.error("❌ load_subscribers: DATABASE_URL не задана")
-        return set()
-
-    # Если соединения нет или оно закрыто, создаём новое
-    if conn is None:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            # Создаём таблицу, если её нет
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS subscribers (
-                        chat_id BIGINT PRIMARY KEY
-                    )
-                """)
-                conn.commit()
-            logger.info("✅ Соединение с БД установлено (первичное)")
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения к БД: {e}")
-            return set()
-
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT chat_id FROM subscribers")
-            rows = cur.fetchall()
-            subs = set(row[0] for row in rows)
-            logger.info(f"✅ Загружено {len(subs)} подписчиков из БД")
-            return subs
-    except (OperationalError, InterfaceError) as e:
-        logger.error(f"❌ Ошибка загрузки подписчиков, пробуем переподключиться: {e}")
-        # Пробуем переподключиться
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            with conn.cursor() as cur:
-                cur.execute("SELECT chat_id FROM subscribers")
-                rows = cur.fetchall()
-                subs = set(row[0] for row in rows)
-                logger.info(f"✅ После переподключения загружено {len(subs)} подписчиков")
-                return subs
-        except Exception as e2:
-            logger.error(f"❌ Не удалось переподключиться: {e2}")
-            return set()
-    except Exception as e:
-        logger.error(f"❌ Неизвестная ошибка загрузки подписчиков: {e}")
-        return set()
-
-def save_subscribers(subs):
-    """Сохраняет подписчиков в БД (полная перезапись)"""
-    global DATABASE_URL, conn
-    if DATABASE_URL is None:
-        logger.error("❌ save_subscribers: DATABASE_URL не задана")
-        return
-
-    if conn is None:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            logger.info("✅ Соединение с БД установлено")
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения к БД: {e}")
-            return
-
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM subscribers")
-            for chat_id in subs:
-                cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
-            conn.commit()
-            logger.info(f"✅ Сохранено {len(subs)} подписчиков в БД")
-    except (OperationalError, InterfaceError) as e:
-        logger.error(f"❌ Ошибка сохранения, пробуем переподключиться: {e}")
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM subscribers")
-                for chat_id in subs:
-                    cur.execute("INSERT INTO subscribers (chat_id) VALUES (%s)", (chat_id,))
-                conn.commit()
-            logger.info("✅ Сохранено после переподключения")
-        except Exception as e2:
-            logger.error(f"❌ Не удалось сохранить даже после переподключения: {e2}")
-    except Exception as e:
-        logger.error(f"❌ Неизвестная ошибка сохранения: {e}")
-
-# Загружаем подписчиков при старте
-subscribers = load_subscribers()
+# Множество подписчиков (хранится только в памяти)
+subscribers = set()
 subscribers_lock = threading.Lock()
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
@@ -390,6 +296,7 @@ async def fetch_candles(api_key, bars=50):
     except Exception as e:
         logger.error(f"fetch error: {e}")
     return None
+
 async def fetch_last_candle(api_key):
     """Получает последнюю свечу EUR/USD (только что закрывшуюся)"""
     url = "https://api.twelvedata.com/time_series"
@@ -410,6 +317,7 @@ async def fetch_last_candle(api_key):
     except Exception as e:
         logger.error(f"fetch_last_candle error: {e}")
     return None
+
 async def update_prices():
     candles = await fetch_candles(TWELVE_API_KEY, 100)
     if candles:
@@ -483,26 +391,6 @@ async def get_indicators():
         else:
             ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
 
-    async def fetch_last_candle(api_key):
-        """Получает последнюю свечу EUR/USD (только что закрывшуюся)"""
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            'symbol': 'EUR/USD',
-            'interval': '1min',
-            'outputsize': 1,
-            'apikey': api_key
-        }
-        try:
-            async with aiohttp.ClientSession() as sess:
-                async with sess.get(url, params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        values = data.get('values')
-                        if values:
-                            return values[0]  # последняя свеча
-        except Exception as e:
-            logger.error(f"fetch_last_candle error: {e}")
-        return None
     # S/R
     sup, res, ns, nr = find_support_resistance(h, l, c)
     ind['support_levels'] = sup
@@ -562,7 +450,9 @@ def index():
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'subscribers': len(subscribers)})
+    with subscribers_lock:
+        count = len(subscribers)
+    return jsonify({'status': 'ok', 'subscribers': count})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -594,7 +484,6 @@ async def handle_callback(chat_id, cb):
     elif cb == 'auto_on':
         with subscribers_lock:
             subscribers.add(chat_id)
-
         await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
     elif cb == 'auto_off':
         with subscribers_lock:
@@ -663,37 +552,28 @@ async def auto_worker():
         try:
             await asyncio.sleep(300)  # 5 минут
 
+            # Получаем список подписчиков (из памяти)
             with subscribers_lock:
                 subs = list(subscribers)
-                logger.info(f"📋 Подписчики: {subs}")
-            # === ОБНОВЛЕНИЕ ДАННЫХ ===
-            # Получаем последнюю свечу с биржи
+                logger.info(f"📋 Подписчиков: {len(subs)}")
+
+            # Обновляем последнюю свечу
             new_candle = await fetch_last_candle(TWELVE_API_KEY)
             if new_candle:
-                # Добавляем свечу в хранилище (старая автоматически удалится, если превышен лимит)
                 price_storage.add_candle(new_candle)
                 logger.info(f"✅ Добавлена новая свеча: {new_candle.get('datetime')} = {new_candle.get('close')}")
             else:
                 logger.warning("⚠️ Не удалось получить новую свечу, сигнал будет на старых данных")
 
-            # === ЗАГРУЗКА ПОДПИСЧИКОВ ИЗ БД ===
-            with subscribers_lock:
-                fresh_subs = load_subscribers()
-                subscribers.clear()
-                subscribers.update(fresh_subs)
-                subs = list(subscribers)
-                logger.info(f"📋 Подписчики: {subs}")
-
+            # Рассылаем сигналы подписчикам
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
                 continue
 
-            # === РАССЫЛКА СИГНАЛОВ ===
             logger.info(f"🔄 Рассылка для {len(subs)} подписчиков")
             for uid in subs:
                 try:
                     bot = Bot(token=BOT_TOKEN)
-                    # Получаем свежие индикаторы на обновлённых данных
                     ind = await get_indicators()
                     if ind:
                         await bot.send_message(uid, generate_message(ind), parse_mode='Markdown')
@@ -706,7 +586,6 @@ async def auto_worker():
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
-
 
 def start_worker():
     loop = asyncio.new_event_loop()
