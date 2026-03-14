@@ -364,9 +364,7 @@ def generate_message(ind):
         rec = "⏸️ ОЖИДАНИЕ"
         emoji = "⚪"
 
-    msg = f"""{emoji} *ПРОФЕССИОНАЛЬНЫЙ АНАЛИЗ EUR/USD* {emoji}
-⏰ {ind['timestamp']}
-💰 *Цена:* `{price:.5f}`
+    msg = f"""{emoji} *АНАЛИЗ EUR/USD* {emoji}
 
 📊 *ОБЩАЯ ВЕРОЯТНОСТЬ*
 ┌─ ⬆️ ВВЕРХ: {up:.1f}%
@@ -603,28 +601,6 @@ def main_menu():
          InlineKeyboardButton("📈 Статус", callback_data='status')],
         [InlineKeyboardButton("🔔 Автосигнал (5 мин)", callback_data='auto_on'),
          InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data='help'),
-         InlineKeyboardButton("⚙️ Настройки", callback_data='settings')]
-    ]
-    return InlineKeyboardMarkup(kb)
-
-
-def help_menu():
-    kb = [
-        [InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
-         InlineKeyboardButton("💰 Торговля", callback_data='help_trading')],
-        [InlineKeyboardButton("❓ FAQ", callback_data='help_faq'),
-         InlineKeyboardButton("◀️ Назад", callback_data='back')]
-    ]
-    return InlineKeyboardMarkup(kb)
-
-
-def settings_menu():
-    kb = [
-        [InlineKeyboardButton("📏 RSI период", callback_data='set_rsi'),
-         InlineKeyboardButton("📊 MACD", callback_data='set_macd')],
-        [InlineKeyboardButton("📉 Bollinger Bands", callback_data='set_bb'),
-         InlineKeyboardButton("◀️ Назад", callback_data='back')]
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -694,24 +670,8 @@ async def handle_callback(chat_id, cb):
                 logger.info(f"⏹️ Подписчик {chat_id} удалён")
             else:
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
-    elif cb == 'help':
-        await bot.send_message(chat_id, "📖 Раздел помощи", reply_markup=help_menu())
-    elif cb == 'settings':
-        await bot.send_message(chat_id, "⚙️ Настройки", reply_markup=settings_menu())
     elif cb == 'back':
         await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
-    elif cb == 'help_indicators':
-        await bot.send_message(chat_id, "📊 Индикаторы: RSI(14), MACD(12/26), BB(20,2), SMA(5,10,20,50), EMA(5,10,20)")
-    elif cb == 'help_trading':
-        await bot.send_message(chat_id, "💰 Риск ≤3%, экспирация 3 мин, уверенность >60%")
-    elif cb == 'help_faq':
-        await bot.send_message(chat_id, "❓ Бот работает 24/7, сигналы по запросу и авто каждые 5 мин")
-    elif cb == 'set_rsi':
-        await bot.send_message(chat_id, "📏 RSI период = 14 (изменение через код)")
-    elif cb == 'set_macd':
-        await bot.send_message(chat_id, "📊 MACD: 12/26/9")
-    elif cb == 'set_bb':
-        await bot.send_message(chat_id, "📉 BB: period=20, std=2")
     else:
         await bot.send_message(chat_id, "❓ Неизвестная команда")
 
@@ -719,7 +679,7 @@ async def handle_callback(chat_id, cb):
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
-        await bot.send_message(chat_id, "🤖 EUR/USD Pro Bot", reply_markup=main_menu())
+        await bot.send_message(chat_id, "🤖 EUR/USD", reply_markup=main_menu())
     elif text == '/signal':
         await send_signal(bot, chat_id)
     elif text == '/status':
