@@ -3,3 +3,7 @@ python-telegram-bot
 aiohttp
 gunicorn==21.2.0
 psycopg2-binary
+scikit-learn
+joblib
+numpy
+python-dotenv
