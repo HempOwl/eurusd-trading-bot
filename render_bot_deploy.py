@@ -8,6 +8,11 @@ from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
+# Для машинного обучения (пока заготовка)
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+import numpy as np
+
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
     level=logging.INFO,
@@ -28,42 +33,85 @@ if not TWELVE_API_KEY:
 
 # Файл для хранения подписчиков
 SUBSCRIBERS_FILE = "subscribers.json"
-# Логируем полный путь для отладки
 full_path = os.path.abspath(SUBSCRIBERS_FILE)
 logger.info(f"📁 Путь к файлу подписчиков: {full_path}")
 
+
 def load_subscribers():
-    """Загружает подписчиков из файла."""
     if os.path.exists(SUBSCRIBERS_FILE):
         try:
             with open(SUBSCRIBERS_FILE, 'r') as f:
                 data = json.load(f)
                 subs = set(data)
-                logger.info(f"📂 Файл найден, загружено подписчиков: {len(subs)}")
+                logger.info(f"📂 Загружено подписчиков: {len(subs)}")
                 return subs
         except Exception as e:
-            logger.error(f"❌ Ошибка загрузки подписчиков из файла: {e}")
+            logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
     else:
-        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует (путь: {full_path})")
+        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует")
     return set()
 
+
 def save_subscribers(subs):
-    """Сохраняет подписчиков в файл."""
     try:
         with open(SUBSCRIBERS_FILE, 'w') as f:
             json.dump(list(subs), f)
-        logger.info(f"💾 Сохранено подписчиков в файл: {len(subs)} (путь: {full_path})")
-        # Проверим, что файл действительно создался
-        if os.path.exists(SUBSCRIBERS_FILE):
-            logger.info(f"✅ Файл успешно создан, размер: {os.path.getsize(SUBSCRIBERS_FILE)} байт")
-        else:
-            logger.error(f"❌ Файл не создался после сохранения!")
+        logger.info(f"💾 Сохранено подписчиков: {len(subs)}")
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения подписчиков в файл: {e}")
+        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
 
-# Множество подписчиков (загружается из файла)
+
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
+
+
+# ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ (ЗАГОТОВКА) ==========
+class MLSignalGenerator:
+    def __init__(self, model_path='model.pkl'):
+        self.model = None
+        self.model_path = model_path
+        self.load_model()
+
+    def load_model(self):
+        if os.path.exists(self.model_path):
+            self.model = joblib.load(self.model_path)
+        else:
+            self.model = RandomForestClassifier(n_estimators=10)
+
+    def save_model(self):
+        joblib.dump(self.model, self.model_path)
+
+    def prepare_features(self, ind):
+        # Вектор признаков для модели
+        features = [
+            ind.get('rsi', 50),
+            ind.get('macd', 0),
+            (ind.get('price', 1) - ind.get('bb_lower', 0)) / (ind.get('bb_upper', 2) - ind.get('bb_lower', 1))
+            if (ind.get('bb_upper', 2) - ind.get('bb_lower', 1)) != 0 else 0.5,
+            ind.get('sma', {}).get(5, 0),
+            ind.get('sma', {}).get(10, 0),
+            ind.get('sma', {}).get(20, 0),
+            ind.get('ema', {}).get(5, 0),
+            ind.get('ema', {}).get(10, 0),
+            ind.get('ema', {}).get(20, 0),
+            ind.get('atr', 0),
+            ind.get('obv', 0),
+        ]
+        return features
+
+    def predict(self, ind):
+        if self.model is None:
+            return 0.5  # нейтрально
+        features = self.prepare_features(ind)
+        X = np.array(features).reshape(1, -1)
+        proba = self.model.predict_proba(X)[0]
+        # Предполагаем класс 1 = вверх, 0 = вниз
+        return proba[1]
+
+
+# Глобальный объект ML (создаётся один раз)
+ml_gen = MLSignalGenerator()
+
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ==========
 class PriceStorage:
@@ -73,6 +121,7 @@ class PriceStorage:
         self.highs = []
         self.lows = []
         self.closes = []
+        self.volumes = []  # для OBV
         self.last_signal = None
 
     def add_candle(self, candle):
@@ -80,19 +129,26 @@ class PriceStorage:
         self.highs.append(float(candle['high']))
         self.lows.append(float(candle['low']))
         self.closes.append(float(candle['close']))
+        self.volumes.append(float(candle.get('volume', 0)))
+
+        # Ограничиваем длину
         if len(self.opens) > self.maxlen:
             self.opens.pop(0)
             self.highs.pop(0)
             self.lows.pop(0)
             self.closes.pop(0)
+            self.volumes.pop(0)
 
     def clear(self):
         self.opens.clear()
         self.highs.clear()
         self.lows.clear()
         self.closes.clear()
+        self.volumes.clear()
+
 
 price_storage = PriceStorage()
+
 
 # ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
 def sma(data, period):
@@ -100,21 +156,23 @@ def sma(data, period):
         return data[-1]
     return sum(data[-period:]) / period
 
+
 def ema(data, period):
     if len(data) < period:
         return data[-1]
     multiplier = 2 / (period + 1)
     ema_val = sum(data[-period:]) / period
-    for price in data[-period+1:]:
+    for price in data[-period + 1:]:
         ema_val = (price - ema_val) * multiplier + ema_val
     return ema_val
+
 
 def rsi(data, period=14):
     if len(data) < period + 1:
         return 50.0
     gains, losses = [], []
     for i in range(1, period + 1):
-        change = data[-i] - data[-i-1]
+        change = data[-i] - data[-i - 1]
         if change > 0:
             gains.append(change)
             losses.append(0.0)
@@ -128,6 +186,7 @@ def rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
 def bbands(data, period=20, std=2):
     if len(data) < period:
         m = data[-1]
@@ -137,20 +196,78 @@ def bbands(data, period=20, std=2):
     s = variance ** 0.5
     return m + std * s, m, m - std * s
 
+
 def macd(data, fast=12, slow=26):
     if len(data) < slow:
         return 0.0
     return ema(data, fast) - ema(data, slow)
 
+
+def calculate_atr(highs, lows, closes, period=14):
+    """Average True Range - измеряет волатильность"""
+    if len(closes) < period + 1:
+        return 0.0, 0.0
+    tr = []
+    for i in range(1, len(closes)):
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i - 1])
+        lc = abs(lows[i] - closes[i - 1])
+        tr.append(max(hl, hc, lc))
+    atr = sum(tr[-period:]) / period
+    atr_percentage = (atr / closes[-1]) * 100
+    return atr, atr_percentage
+
+
+def calculate_obv(closes, volumes):
+    if len(closes) < 2 or len(volumes) < 2:
+        return [0]
+    obv = [0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+    return obv
+
+
+def obv_trend(obv_values, period=14):
+    if len(obv_values) < period:
+        return "neutral"
+    obv_ema = ema(obv_values, period)  # используем функцию ema, определённую выше
+    return "bullish" if obv_values[-1] > obv_ema else "bearish"
+
+
+def detect_false_breakout(highs, lows, closes, lookback=5):
+    if len(closes) < lookback + 2:
+        return "no_breakout"
+    recent_high = max(highs[-lookback - 1:-1])  # исключаем последнюю свечу
+    recent_low = min(lows[-lookback - 1:-1])
+    current_close = closes[-1]
+
+    if current_close > recent_high:
+        if closes[-2] < recent_high:
+            return "false_breakout_up"
+        else:
+            return "valid_breakout_up"
+    if current_close < recent_low:
+        if closes[-2] > recent_low:
+            return "false_breakout_down"
+        else:
+            return "valid_breakout_down"
+    return "no_breakout"
+
+
 def find_support_resistance(high, low, close, window=5):
     supports, resistances = [], []
     n = len(close)
     for i in range(window, n - window):
-        if all(low[i] <= low[i-j] for j in range(1, window+1)) and \
-           all(low[i] <= low[i+j] for j in range(1, window+1)):
+        if all(low[i] <= low[i - j] for j in range(1, window + 1)) and \
+                all(low[i] <= low[i + j] for j in range(1, window + 1)):
             supports.append(low[i])
-        if all(high[i] >= high[i-j] for j in range(1, window+1)) and \
-           all(high[i] >= high[i+j] for j in range(1, window+1)):
+        if all(high[i] >= high[i - j] for j in range(1, window + 1)) and \
+                all(high[i] >= high[i + j] for j in range(1, window + 1)):
             resistances.append(high[i])
 
     def cluster(levels, thr=0.0005):
@@ -160,12 +277,12 @@ def find_support_resistance(high, low, close, window=5):
         cl = [levels[0]]
         res = []
         for lev in levels[1:]:
-            if abs(lev - sum(cl)/len(cl)) < thr:
+            if abs(lev - sum(cl) / len(cl)) < thr:
                 cl.append(lev)
             else:
-                res.append(sum(cl)/len(cl))
+                res.append(sum(cl) / len(cl))
                 cl = [lev]
-        res.append(sum(cl)/len(cl))
+        res.append(sum(cl) / len(cl))
         return res
 
     supports = cluster(supports)
@@ -182,60 +299,47 @@ def find_support_resistance(high, low, close, window=5):
             break
     return supports[-3:], resistances[-3:], ns, nr
 
-def calculate_probability(ind):
-    up = 0
-    down = 0
+
+def calculate_normalized_score(ind):
+    """
+    Нормализованная оценка от -100 (макс. продажа) до +100 (макс. покупка).
+    """
+    score = 0
+    max_score = 0
+
     # RSI
-    rsi_val = ind.get('rsi', 50)
-    if rsi_val < 30:
-        up += 3
-    elif rsi_val > 70:
-        down += 3
-    elif rsi_val > 50:
-        up += 1
-    else:
-        down += 1
+    if ind['rsi'] < 30:
+        score += 1
+    elif ind['rsi'] > 70:
+        score -= 1
+    max_score += 1
+
     # MACD
-    macd_trend = ind.get('macd_trend', '')
-    if 'БЫЧИЙ' in macd_trend:
-        up += 2
-    elif 'МЕДВЕЖИЙ' in macd_trend:
-        down += 2
-    # BB
-    bb_signal = ind.get('bb_signal', '')
-    if 'ПЕРЕПРОДАННОСТЬ' in bb_signal:
-        up += 2
-    elif 'ПЕРЕКУПЛЕННОСТЬ' in bb_signal:
-        down += 2
-    # SMA
-    for p in [5, 10, 20, 50]:
-        sig = ind.get(f'sma_{p}_signal', '')
-        if 'ВЫШЕ' in sig:
-            up += 1
-        elif 'НИЖЕ' in sig:
-            down += 1
-    # EMA
-    for p in [5, 10, 20]:
-        sig = ind.get(f'ema_{p}_signal', '')
-        if 'ВЫШЕ' in sig:
-            up += 1
-        elif 'НИЖЕ' in sig:
-            down += 1
-    # S/R
-    if ind.get('nearest_support') and ind.get('nearest_resistance'):
-        if ind['distance_to_support'] < ind['distance_to_resistance']:
-            up += 1
-        else:
-            down += 1
-    total = up + down
-    if total:
-        prob_up = round((up / total) * 100, 1)
-        prob_down = round((down / total) * 100, 1)
-        conf = round(abs(up - down) / total * 100, 1)
+    if ind['macd'] > 0:
+        score += 1
     else:
-        prob_up = prob_down = 50.0
-        conf = 0.0
-    return prob_up, prob_down, conf
+        score -= 1
+    max_score += 1
+
+    # Bollinger Bands
+    price = ind['price']
+    if price <= ind['bb_lower']:
+        score += 1
+    elif price >= ind['bb_upper']:
+        score -= 1
+    max_score += 1
+
+    # EMA тренд (EMA(5) > EMA(20) – бычий)
+    if ind['ema'][5] > ind['ema'][20]:
+        score += 1
+    else:
+        score -= 1
+    max_score += 1
+
+    # Нормализация в проценты от -100% до +100%
+    normalized = (score / max_score) * 100
+    return normalized
+
 
 def generate_message(ind):
     if not ind:
@@ -265,9 +369,9 @@ def generate_message(ind):
 💰 *Цена:* `{price:.5f}`
 
 📊 *ОБЩАЯ ВЕРОЯТНОСТЬ*
-┌─ ⬆️ ВВЕРХ: {up}%
-└─ ⬇️ ВНИЗ: {down}%
-🎯 Уверенность: {conf}%
+┌─ ⬆️ ВВЕРХ: {up:.1f}%
+└─ ⬇️ ВНИЗ: {down:.1f}%
+🎯 Уверенность: {conf:.1f}%
 💡 Рекомендация: {rec}
 
 📈 *RSI*
@@ -311,8 +415,18 @@ def generate_message(ind):
         msg += f"├─ Уровни поддержки: {', '.join([f'{x:.5f}' for x in ind['support_levels']])}\n"
     if ind['resistance_levels']:
         msg += f"└─ Уровни сопротивления: {', '.join([f'{x:.5f}' for x in ind['resistance_levels']])}\n"
-    msg += f"\n#{'BUY' if up > down else 'SELL'} #EURUSD"
+
+    # Добавим новые показатели (если есть)
+    if 'atr_percent' in ind:
+        msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
+    if 'breakout' in ind and ind['breakout'] != 'no_breakout':
+        msg += f"\n🚩 *Пробой*: {ind['breakout']}"
+    if 'ml_prob_up' in ind:
+        msg += f"\n🤖 *ML вероятность*: {ind['ml_prob_up'] * 100:.1f}%"
+
+    msg += f"\n\n#{'BUY' if up > down else 'SELL'} #EURUSD"
     return msg
+
 
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 async def fetch_candles(api_key, bars=50):
@@ -333,8 +447,8 @@ async def fetch_candles(api_key, bars=50):
         logger.error(f"fetch error: {e}")
     return None
 
+
 async def fetch_last_candle(api_key):
-    """Получает последнюю свечу EUR/USD (только что закрывшуюся)"""
     url = "https://api.twelvedata.com/time_series"
     params = {
         'symbol': 'EUR/USD',
@@ -354,6 +468,7 @@ async def fetch_last_candle(api_key):
         logger.error(f"fetch_last_candle error: {e}")
     return None
 
+
 async def update_prices():
     candles = await fetch_candles(TWELVE_API_KEY, 200)
     if candles:
@@ -363,15 +478,18 @@ async def update_prices():
         return True
     return False
 
+
 async def get_indicators():
     if len(price_storage.closes) < 20:
         if not await update_prices():
             return None
+
     c = price_storage.closes
     h = price_storage.highs
     l = price_storage.lows
     cur = c[-1]
     ind = {}
+
     # RSI
     ind['rsi'] = rsi(c, 14)
     if ind['rsi'] > 70:
@@ -382,11 +500,13 @@ async def get_indicators():
         ind['rsi_signal'] = 'ВОСХОДЯЩИЙ ТРЕНД'
     else:
         ind['rsi_signal'] = 'НИСХОДЯЩИЙ ТРЕНД'
+
     # MACD
     macd_line = macd(c, 12, 26)
     ind['macd'] = macd_line
     ind['macd_trend'] = 'БЫЧИЙ СИГНАЛ' if macd_line > 0 else 'МЕДВЕЖИЙ СИГНАЛ' if macd_line < 0 else 'НЕЙТРАЛЬНО'
-    # BB
+
+    # Bollinger Bands
     upper, mid, lower = bbands(c, 20, 2)
     ind['bb_upper'] = upper
     ind['bb_middle'] = mid
@@ -404,6 +524,7 @@ async def get_indicators():
     else:
         ind['bb_position'] = 'МЕЖДУ СРЕДНЕЙ И НИЖНЕЙ'
         ind['bb_signal'] = 'НЕЙТРАЛЬНО'
+
     # SMA
     ind['sma'] = {}
     for p in [5, 10, 20, 50]:
@@ -415,6 +536,7 @@ async def get_indicators():
             ind[f'sma_{p}_signal'] = '⬇️ НИЖЕ'
         else:
             ind[f'sma_{p}_signal'] = '⏺️ ОКОЛО'
+
     # EMA
     ind['ema'] = {}
     for p in [5, 10, 20]:
@@ -427,7 +549,21 @@ async def get_indicators():
         else:
             ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
 
-    # S/R
+    # OBV
+    if hasattr(price_storage, 'volumes') and price_storage.volumes:
+        obv_values = calculate_obv(price_storage.closes, price_storage.volumes)
+        ind['obv'] = obv_values[-1] if obv_values else 0
+        ind['obv_trend'] = obv_trend(obv_values, 14)
+    else:
+        ind['obv'] = 0
+        ind['obv_trend'] = 'neutral'
+
+    # ATR
+    atr, atr_pct = calculate_atr(price_storage.highs, price_storage.lows, price_storage.closes, 14)
+    ind['atr'] = atr
+    ind['atr_percent'] = atr_pct
+
+    # Support / Resistance
     sup, res, ns, nr = find_support_resistance(h, l, c)
     ind['support_levels'] = sup
     ind['resistance_levels'] = res
@@ -435,12 +571,30 @@ async def get_indicators():
     ind['nearest_resistance'] = nr
     ind['distance_to_support'] = (cur - ns) * 10000 if ns else 0
     ind['distance_to_resistance'] = (nr - cur) * 10000 if nr else 0
-    # Вероятность
-    ind['prob_up'], ind['prob_down'], ind['confidence'] = calculate_probability(ind)
+
+    # False breakout
+    ind['breakout'] = detect_false_breakout(price_storage.highs, price_storage.lows, price_storage.closes)
+
+    # Нормализованная оценка
+    ind['ml_score'] = calculate_normalized_score(ind)
+
+    # Преобразуем ml_score в вероятности для совместимости с generate_message
+    if ind['ml_score'] >= 0:
+        ind['prob_up'] = 50 + ind['ml_score'] / 2
+        ind['prob_down'] = 50 - ind['ml_score'] / 2
+    else:
+        ind['prob_up'] = 50 + ind['ml_score'] / 2  # ml_score отрицательный, prob_up < 50
+        ind['prob_down'] = 50 - ind['ml_score'] / 2
+    ind['confidence'] = abs(ind['ml_score'])
+
+    # ML модель (если есть)
+    ind['ml_prob_up'] = ml_gen.predict(ind)
+
     ind['price'] = cur
     ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
     price_storage.last_signal = ind
     return ind
+
 
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
@@ -454,6 +608,7 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
+
 def help_menu():
     kb = [
         [InlineKeyboardButton("📊 Индикаторы", callback_data='help_indicators'),
@@ -462,6 +617,7 @@ def help_menu():
          InlineKeyboardButton("◀️ Назад", callback_data='back')]
     ]
     return InlineKeyboardMarkup(kb)
+
 
 def settings_menu():
     kb = [
@@ -472,6 +628,7 @@ def settings_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
+
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
@@ -480,15 +637,18 @@ def before_request():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
+
 @app.route('/')
 def index():
     return "<h1>EUR/USD Pro Bot</h1><p>Running</p>"
+
 
 @app.route('/health')
 def health():
     with subscribers_lock:
         count = len(subscribers)
     return jsonify({'status': 'ok', 'subscribers': count})
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -510,6 +670,7 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({'ok': False}), 500
+
 
 async def handle_callback(chat_id, cb):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
@@ -554,6 +715,7 @@ async def handle_callback(chat_id, cb):
     else:
         await bot.send_message(chat_id, "❓ Неизвестная команда")
 
+
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
@@ -573,6 +735,7 @@ async def handle_message(chat_id, text):
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
+
 async def send_signal(bot, chat_id):
     await bot.send_message(chat_id, "🔄 Анализирую...")
     ind = await get_indicators()
@@ -581,10 +744,12 @@ async def send_signal(bot, chat_id):
         return
     await bot.send_message(chat_id, generate_message(ind), parse_mode='Markdown')
 
+
 async def send_status(bot, chat_id):
     with subscribers_lock:
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nСвечей: {len(price_storage.closes)}")
+
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
@@ -593,11 +758,12 @@ async def auto_worker():
         try:
             await asyncio.sleep(290)  # 5 минут
 
-            # ПРИНУДИТЕЛЬНО загружаем подписчиков из файла, чтобы убедиться, что они не потеряны
+            # Синхронизация подписчиков с файлом
             file_subs = load_subscribers()
             with subscribers_lock:
                 if file_subs != subscribers:
-                    logger.warning(f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
+                    logger.warning(
+                        f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
                     subscribers.clear()
                     subscribers.update(file_subs)
                 subs = list(subscribers)
@@ -633,10 +799,12 @@ async def auto_worker():
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
 
+
 def start_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
+
 
 threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")
