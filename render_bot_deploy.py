@@ -441,6 +441,54 @@ def find_support_resistance(high, low, close, window=5):
     return supports[-3:], resistances[-3:], ns, nr
 
 
+def adx(highs, lows, closes, period=14):
+    """Возвращает ADX, DI+, DI-"""
+    if len(closes) < period + 1:
+        return 0, 0, 0
+    tr = []
+    plus_dm = []
+    minus_dm = []
+    for i in range(1, len(closes)):
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i-1])
+        lc = abs(lows[i] - closes[i-1])
+        tr.append(max(hl, hc, lc))
+        up_move = highs[i] - highs[i-1]
+        down_move = lows[i-1] - lows[i]
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
+    atr = sum(tr[-period:]) / period
+    plus_di = 100 * (sum(plus_dm[-period:]) / period) / atr if atr != 0 else 0
+    minus_di = 100 * (sum(minus_dm[-period:]) / period) / atr if atr != 0 else 0
+    dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
+    adx_val = sum([dx] * period) / period  # упрощённо, на самом деле сглаживают
+    return adx_val, plus_di, minus_di
+
+
+def stochastic(highs, lows, closes, k_period=14, d_period=3):
+    """Возвращает %K и %D"""
+    if len(closes) < k_period + d_period:
+        return 50, 50
+    highest_high = max(highs[-k_period:])
+    lowest_low = min(lows[-k_period:])
+    k = 100 * (closes[-1] - lowest_low) / (highest_high - lowest_low) if (highest_high - lowest_low) != 0 else 50
+    # Простейшее сглаживание %D как SMA от %K за 3 периода
+    d = sum([k] * d_period) / d_period
+    return k, d
+
+
+def pivot_points(high, low, close):
+    """Классические Pivot Points на основе вчерашнего дня"""
+    pivot = (high + low + close) / 3
+    r1 = 2 * pivot - low
+    r2 = pivot + (high - low)
+    r3 = high + 2 * (pivot - low)
+    s1 = 2 * pivot - high
+    s2 = pivot - (high - low)
+    s3 = low - 2 * (high - pivot)
+    return pivot, r1, r2, r3, s1, s2, s3
+
+
 def calculate_normalized_score(ind):
     """
     Нормализованная оценка от -100 (макс. продажа) до +100 (макс. покупка).
@@ -448,37 +496,69 @@ def calculate_normalized_score(ind):
     score = 0
     max_score = 0
 
-    # RSI
+    # RSI (вес 2)
     if ind['rsi'] < 30:
-        score += 1
+        score += 2
     elif ind['rsi'] > 70:
-        score -= 1
-    max_score += 1
+        score -= 2
+    max_score += 2
 
-    # MACD
+    # MACD (вес 2)
     if ind['macd'] > 0:
-        score += 1
+        score += 2
     else:
-        score -= 1
-    max_score += 1
+        score -= 2
+    max_score += 2
 
-    # Bollinger Bands
+    # Bollinger Bands (вес 2)
     price = ind['price']
     if price <= ind['bb_lower']:
-        score += 1
+        score += 2
     elif price >= ind['bb_upper']:
-        score -= 1
-    max_score += 1
+        score -= 2
+    max_score += 2
 
-    # EMA тренд (EMA(5) > EMA(20) – бычий)
+    # EMA тренд (вес 1)
     if ind['ema'][5] > ind['ema'][20]:
         score += 1
     else:
         score -= 1
     max_score += 1
 
+    # ADX + направление (вес 3, если тренд сильный)
+    if ind.get('adx', 0) > 25:
+        if ind['plus_di'] > ind['minus_di']:
+            score += 3
+        else:
+            score -= 3
+        max_score += 3
+
+    # Stochastic (вес 2)
+    if ind.get('stoch_k', 50) < 20:
+        score += 2
+    elif ind.get('stoch_k', 50) > 80:
+        score -= 2
+    max_score += 2
+
+    # Поддержка/сопротивление (близость к уровням) (вес 2)
+    dist_to_sup = ind.get('distance_to_support', 1000)
+    dist_to_res = ind.get('distance_to_resistance', 1000)
+    if dist_to_sup < 10 and dist_to_sup < dist_to_res:
+        score += 2  # у поддержки, возможен отскок
+    elif dist_to_res < 10 and dist_to_res < dist_to_sup:
+        score -= 2  # у сопротивления, возможен откат
+    max_score += 2
+
+    # Изменение за 3 минуты (вес 1)
+    change = ind.get('change_3min', 0)
+    if change > 0.0001:  # примерно 1 пипс
+        score += 1
+    elif change < -0.0001:
+        score -= 1
+    max_score += 1
+
     # Нормализация в проценты от -100% до +100%
-    normalized = (score / max_score) * 100
+    normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
 
@@ -554,13 +634,30 @@ def generate_message(ind):
         if ind['resistance_levels']:
             msg += f"└─ Уровни сопротивления: {', '.join([f'{x:.5f}' for x in ind['resistance_levels']])}\n"
 
-        # Добавим новые показатели (если есть)
+        # Новые индикаторы
         if 'atr_percent' in ind:
             msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
         if 'breakout' in ind and ind['breakout'] != 'no_breakout':
             msg += f"\n🚩 *Пробой*: {ind['breakout']}"
         if 'ml_prob_up' in ind:
             msg += f"\n🤖 *ML вероятность*: {ind['ml_prob_up'] * 100:.1f}%"
+
+        # ADX
+        if 'adx' in ind:
+            msg += f"\n📈 *ADX*: {ind['adx']:.1f} (DI+:{ind['plus_di']:.1f} DI-:{ind['minus_di']:.1f})"
+
+        # Stochastic
+        if 'stoch_k' in ind:
+            msg += f"\n📊 *Stochastic*: %K={ind['stoch_k']:.1f} %D={ind['stoch_d']:.1f}"
+
+        # Pivot Points
+        if 'pivot' in ind:
+            msg += f"\n📍 *Pivot*: {ind['pivot']:.5f} | R1:{ind['r1']:.5f} S1:{ind['s1']:.5f}"
+
+        # 3-минутное изменение
+        if 'change_3min_pct' in ind:
+            arrow = "⬆️" if ind['change_3min'] > 0 else "⬇️" if ind['change_3min'] < 0 else "➡️"
+            msg += f"\n📊 *3 мин изменение*: {arrow} {ind['change_3min_pct']:.3f}%"
 
         msg += f"\n\n#{'BUY' if up > down else 'SELL'} #EURUSD"
         return msg
@@ -635,6 +732,16 @@ async def get_indicators():
         cur = c[-1]
         ind = {}
         ind['price'] = cur
+
+        # Изменение за 3 минуты (если есть данные)
+        if len(c) >= 3:
+            price_3min_ago = c[-3]
+            change_3min = cur - price_3min_ago
+            ind['change_3min'] = change_3min
+            ind['change_3min_pct'] = (change_3min / price_3min_ago) * 100
+        else:
+            ind['change_3min'] = 0
+            ind['change_3min_pct'] = 0
 
         # RSI
         ind['rsi'] = rsi(c, 14)
@@ -720,6 +827,31 @@ async def get_indicators():
 
         # False breakout
         ind['breakout'] = detect_false_breakout(price_storage.highs, price_storage.lows, price_storage.closes)
+
+        # ADX
+        adx_val, plus_di, minus_di = adx(price_storage.highs, price_storage.lows, price_storage.closes, 14)
+        ind['adx'] = adx_val
+        ind['plus_di'] = plus_di
+        ind['minus_di'] = minus_di
+
+        # Stochastic
+        stoch_k, stoch_d = stochastic(price_storage.highs, price_storage.lows, price_storage.closes, 14, 3)
+        ind['stoch_k'] = stoch_k
+        ind['stoch_d'] = stoch_d
+
+        # Pivot Points (если достаточно данных)
+        if len(price_storage.highs) >= 1440:  # 24 часа по 1 минуте
+            day_high = max(price_storage.highs[-1440:])
+            day_low = min(price_storage.lows[-1440:])
+            day_close = price_storage.closes[-1440]  # закрытие 24 часа назад
+            pivot, r1, r2, r3, s1, s2, s3 = pivot_points(day_high, day_low, day_close)
+            ind['pivot'] = pivot
+            ind['r1'] = r1
+            ind['r2'] = r2
+            ind['r3'] = r3
+            ind['s1'] = s1
+            ind['s2'] = s2
+            ind['s3'] = s3
 
         # Нормализованная оценка
         ind['ml_score'] = calculate_normalized_score(ind)
