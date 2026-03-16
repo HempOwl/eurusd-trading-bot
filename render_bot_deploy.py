@@ -235,7 +235,7 @@ def calculate_obv(closes, volumes):
 def obv_trend(obv_values, period=14):
     if len(obv_values) < period:
         return "neutral"
-    obv_ema = ema(obv_values, period)  # используем функцию ema, определённую выше
+    obv_ema = ema(obv_values, period)
     return "bullish" if obv_values[-1] > obv_ema else "bearish"
 
 
@@ -342,29 +342,28 @@ def calculate_normalized_score(ind):
 
 
 def generate_message(ind):
-    if not ind:
-        return "❌ Нет данных"
-    price = ind['price']
-    up = ind['prob_up']
-    down = ind['prob_down']
-    conf = ind['confidence']
-    if up > down + 10 and conf > 50:
-        rec = "📈 СИЛЬНАЯ ПОКУПКА"
-        emoji = "🟢"
-    elif up > down:
-        rec = "📈 ПОКУПКА"
-        emoji = "🟢"
-    elif down > up + 10 and conf > 50:
-        rec = "📉 СИЛЬНАЯ ПРОДАЖА"
-        emoji = "🔴"
-    elif down > up:
-        rec = "📉 ПРОДАЖА"
-        emoji = "🔴"
-    else:
-        rec = "⏸️ ОЖИДАНИЕ"
-        emoji = "⚪"
+    try:
+        price = ind['price']
+        up = ind['prob_up']
+        down = ind['prob_down']
+        conf = ind['confidence']
+        if up > down + 10 and conf > 50:
+            rec = "📈 СИЛЬНАЯ ПОКУПКА"
+            emoji = "🟢"
+        elif up > down:
+            rec = "📈 ПОКУПКА"
+            emoji = "🟢"
+        elif down > up + 10 and conf > 50:
+            rec = "📉 СИЛЬНАЯ ПРОДАЖА"
+            emoji = "🔴"
+        elif down > up:
+            rec = "📉 ПРОДАЖА"
+            emoji = "🔴"
+        else:
+            rec = "⏸️ ОЖИДАНИЕ"
+            emoji = "⚪"
 
-    msg = f"""{emoji} *АНАЛИЗ EUR/USD* {emoji}
+        msg = f"""{emoji} *АНАЛИЗ EUR/USD* {emoji}
 
 📊 *ОБЩАЯ ВЕРОЯТНОСТЬ*
 ┌─ ⬆️ ВВЕРХ: {up:.1f}%
@@ -391,39 +390,45 @@ def generate_message(ind):
 └─ Сигнал: {ind['bb_signal']}
 
 📏 *Скользящие средние (SMA)*\n"""
-    for p in [5, 10, 20, 50]:
-        if p in ind['sma']:
-            sig = ind.get(f'sma_{p}_signal', '')
-            msg += f"├─ SMA({p}): `{ind['sma'][p]:.5f}` {sig}\n"
-    msg += "\n📊 *Экспоненциальные средние (EMA)*\n"
-    for p in [5, 10, 20]:
-        if p in ind['ema']:
-            sig = ind.get(f'ema_{p}_signal', '')
-            msg += f"├─ EMA({p}): `{ind['ema'][p]:.5f}` {sig}\n"
-    sup_str = f"`{ind['nearest_support']:.5f}`" if ind['nearest_support'] else "`не определен`"
-    res_str = f"`{ind['nearest_resistance']:.5f}`" if ind['nearest_resistance'] else "`не определен`"
-    d_sup = f"{ind['distance_to_support']:.0f}" if ind['distance_to_support'] else "?"
-    d_res = f"{ind['distance_to_resistance']:.0f}" if ind['distance_to_resistance'] else "?"
-    msg += f"""
+        for p in [5, 10, 20, 50]:
+            if p in ind['sma']:
+                sig = ind.get(f'sma_{p}_signal', '')
+                msg += f"├─ SMA({p}): `{ind['sma'][p]:.5f}` {sig}\n"
+        msg += "\n📊 *Экспоненциальные средние (EMA)*\n"
+        for p in [5, 10, 20]:
+            if p in ind['ema']:
+                sig = ind.get(f'ema_{p}_signal', '')
+                msg += f"├─ EMA({p}): `{ind['ema'][p]:.5f}` {sig}\n"
+        sup_str = f"`{ind['nearest_support']:.5f}`" if ind['nearest_support'] else "`не определен`"
+        res_str = f"`{ind['nearest_resistance']:.5f}`" if ind['nearest_resistance'] else "`не определен`"
+        d_sup = f"{ind['distance_to_support']:.0f}" if ind['distance_to_support'] else "?"
+        d_res = f"{ind['distance_to_resistance']:.0f}" if ind['distance_to_resistance'] else "?"
+        msg += f"""
 📊 *Уровни поддержки/сопротивления*
 ┌─ Ближайшая поддержка: {sup_str} (дист: {d_sup} пипсов)
 └─ Ближайшее сопротивление: {res_str} (дист: {d_res} пипсов)
 """
-    if ind['support_levels']:
-        msg += f"├─ Уровни поддержки: {', '.join([f'{x:.5f}' for x in ind['support_levels']])}\n"
-    if ind['resistance_levels']:
-        msg += f"└─ Уровни сопротивления: {', '.join([f'{x:.5f}' for x in ind['resistance_levels']])}\n"
+        if ind['support_levels']:
+            msg += f"├─ Уровни поддержки: {', '.join([f'{x:.5f}' for x in ind['support_levels']])}\n"
+        if ind['resistance_levels']:
+            msg += f"└─ Уровни сопротивления: {', '.join([f'{x:.5f}' for x in ind['resistance_levels']])}\n"
 
-    # Добавим новые показатели (если есть)
-    if 'atr_percent' in ind:
-        msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
-    if 'breakout' in ind and ind['breakout'] != 'no_breakout':
-        msg += f"\n🚩 *Пробой*: {ind['breakout']}"
-    if 'ml_prob_up' in ind:
-        msg += f"\n🤖 *ML вероятность*: {ind['ml_prob_up'] * 100:.1f}%"
+        # Добавим новые показатели (если есть)
+        if 'atr_percent' in ind:
+            msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
+        if 'breakout' in ind and ind['breakout'] != 'no_breakout':
+            msg += f"\n🚩 *Пробой*: {ind['breakout']}"
+        if 'ml_prob_up' in ind:
+            msg += f"\n🤖 *ML вероятность*: {ind['ml_prob_up'] * 100:.1f}%"
 
-    msg += f"\n\n#{'BUY' if up > down else 'SELL'} #EURUSD"
-    return msg
+        msg += f"\n\n#{'BUY' if up > down else 'SELL'} #EURUSD"
+        return msg
+    except KeyError as e:
+        logger.error(f"KeyError in generate_message: {e}")
+        return f"❌ Ошибка формирования сигнала: отсутствует ключ {e}"
+    except Exception as e:
+        logger.error(f"Unexpected error in generate_message: {e}")
+        return "❌ Внутренняя ошибка при формировании сигнала"
 
 
 # ========== ЗАГРУЗКА ДАННЫХ ==========
@@ -478,120 +483,124 @@ async def update_prices():
 
 
 async def get_indicators():
-    if len(price_storage.closes) < 20:
-        if not await update_prices():
-            return None
+    try:
+        if len(price_storage.closes) < 20:
+            if not await update_prices():
+                return None
 
-    c = price_storage.closes
-    h = price_storage.highs
-    l = price_storage.lows
-    cur = c[-1]
-    ind = {}
+        c = price_storage.closes
+        h = price_storage.highs
+        l = price_storage.lows
+        cur = c[-1]
+        ind = {}
 
-    # RSI
-    ind['rsi'] = rsi(c, 14)
-    if ind['rsi'] > 70:
-        ind['rsi_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (сигнал к продаже)'
-    elif ind['rsi'] < 30:
-        ind['rsi_signal'] = 'ПЕРЕПРОДАННОСТЬ (сигнал к покупке)'
-    elif ind['rsi'] > 50:
-        ind['rsi_signal'] = 'ВОСХОДЯЩИЙ ТРЕНД'
-    else:
-        ind['rsi_signal'] = 'НИСХОДЯЩИЙ ТРЕНД'
-
-    # MACD
-    macd_line = macd(c, 12, 26)
-    ind['macd'] = macd_line
-    ind['macd_trend'] = 'БЫЧИЙ СИГНАЛ' if macd_line > 0 else 'МЕДВЕЖИЙ СИГНАЛ' if macd_line < 0 else 'НЕЙТРАЛЬНО'
-
-    # Bollinger Bands
-    upper, mid, lower = bbands(c, 20, 2)
-    ind['bb_upper'] = upper
-    ind['bb_middle'] = mid
-    ind['bb_lower'] = lower
-    ind['bb_width'] = ((upper - lower) / mid) * 100
-    if cur >= upper:
-        ind['bb_position'] = 'ВЫШЕ ВЕРХНЕЙ ПОЛОСЫ'
-        ind['bb_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (возможен откат вниз)'
-    elif cur <= lower:
-        ind['bb_position'] = 'НИЖЕ НИЖНЕЙ ПОЛОСЫ'
-        ind['bb_signal'] = 'ПЕРЕПРОДАННОСТЬ (возможен отскок вверх)'
-    elif cur > mid:
-        ind['bb_position'] = 'МЕЖДУ СРЕДНЕЙ И ВЕРХНЕЙ'
-        ind['bb_signal'] = 'НЕЙТРАЛЬНО'
-    else:
-        ind['bb_position'] = 'МЕЖДУ СРЕДНЕЙ И НИЖНЕЙ'
-        ind['bb_signal'] = 'НЕЙТРАЛЬНО'
-
-    # SMA
-    ind['sma'] = {}
-    for p in [5, 10, 20, 50]:
-        val = sma(c, p)
-        ind['sma'][p] = val
-        if cur > val:
-            ind[f'sma_{p}_signal'] = '⬆️ ВЫШЕ'
-        elif cur < val:
-            ind[f'sma_{p}_signal'] = '⬇️ НИЖЕ'
+        # RSI
+        ind['rsi'] = rsi(c, 14)
+        if ind['rsi'] > 70:
+            ind['rsi_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (сигнал к продаже)'
+        elif ind['rsi'] < 30:
+            ind['rsi_signal'] = 'ПЕРЕПРОДАННОСТЬ (сигнал к покупке)'
+        elif ind['rsi'] > 50:
+            ind['rsi_signal'] = 'ВОСХОДЯЩИЙ ТРЕНД'
         else:
-            ind[f'sma_{p}_signal'] = '⏺️ ОКОЛО'
+            ind['rsi_signal'] = 'НИСХОДЯЩИЙ ТРЕНД'
 
-    # EMA
-    ind['ema'] = {}
-    for p in [5, 10, 20]:
-        val = ema(c, p)
-        ind['ema'][p] = val
-        if cur > val:
-            ind[f'ema_{p}_signal'] = '⬆️ ВЫШЕ'
-        elif cur < val:
-            ind[f'ema_{p}_signal'] = '⬇️ НИЖЕ'
+        # MACD
+        macd_line = macd(c, 12, 26)
+        ind['macd'] = macd_line
+        ind['macd_trend'] = 'БЫЧИЙ СИГНАЛ' if macd_line > 0 else 'МЕДВЕЖИЙ СИГНАЛ' if macd_line < 0 else 'НЕЙТРАЛЬНО'
+
+        # Bollinger Bands
+        upper, mid, lower = bbands(c, 20, 2)
+        ind['bb_upper'] = upper
+        ind['bb_middle'] = mid
+        ind['bb_lower'] = lower
+        ind['bb_width'] = ((upper - lower) / mid) * 100
+        if cur >= upper:
+            ind['bb_position'] = 'ВЫШЕ ВЕРХНЕЙ ПОЛОСЫ'
+            ind['bb_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (возможен откат вниз)'
+        elif cur <= lower:
+            ind['bb_position'] = 'НИЖЕ НИЖНЕЙ ПОЛОСЫ'
+            ind['bb_signal'] = 'ПЕРЕПРОДАННОСТЬ (возможен отскок вверх)'
+        elif cur > mid:
+            ind['bb_position'] = 'МЕЖДУ СРЕДНЕЙ И ВЕРХНЕЙ'
+            ind['bb_signal'] = 'НЕЙТРАЛЬНО'
         else:
-            ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
+            ind['bb_position'] = 'МЕЖДУ СРЕДНЕЙ И НИЖНЕЙ'
+            ind['bb_signal'] = 'НЕЙТРАЛЬНО'
 
-    # OBV
-    if hasattr(price_storage, 'volumes') and price_storage.volumes:
-        obv_values = calculate_obv(price_storage.closes, price_storage.volumes)
-        ind['obv'] = obv_values[-1] if obv_values else 0
-        ind['obv_trend'] = obv_trend(obv_values, 14)
-    else:
-        ind['obv'] = 0
-        ind['obv_trend'] = 'neutral'
+        # SMA
+        ind['sma'] = {}
+        for p in [5, 10, 20, 50]:
+            val = sma(c, p)
+            ind['sma'][p] = val
+            if cur > val:
+                ind[f'sma_{p}_signal'] = '⬆️ ВЫШЕ'
+            elif cur < val:
+                ind[f'sma_{p}_signal'] = '⬇️ НИЖЕ'
+            else:
+                ind[f'sma_{p}_signal'] = '⏺️ ОКОЛО'
 
-    # ATR
-    atr, atr_pct = calculate_atr(price_storage.highs, price_storage.lows, price_storage.closes, 14)
-    ind['atr'] = atr
-    ind['atr_percent'] = atr_pct
+        # EMA
+        ind['ema'] = {}
+        for p in [5, 10, 20]:
+            val = ema(c, p)
+            ind['ema'][p] = val
+            if cur > val:
+                ind[f'ema_{p}_signal'] = '⬆️ ВЫШЕ'
+            elif cur < val:
+                ind[f'ema_{p}_signal'] = '⬇️ НИЖЕ'
+            else:
+                ind[f'ema_{p}_signal'] = '⏺️ ОКОЛО'
 
-    # Support / Resistance
-    sup, res, ns, nr = find_support_resistance(h, l, c)
-    ind['support_levels'] = sup
-    ind['resistance_levels'] = res
-    ind['nearest_support'] = ns
-    ind['nearest_resistance'] = nr
-    ind['distance_to_support'] = (cur - ns) * 10000 if ns else 0
-    ind['distance_to_resistance'] = (nr - cur) * 10000 if nr else 0
+        # OBV
+        if hasattr(price_storage, 'volumes') and price_storage.volumes:
+            obv_values = calculate_obv(price_storage.closes, price_storage.volumes)
+            ind['obv'] = obv_values[-1] if obv_values else 0
+            ind['obv_trend'] = obv_trend(obv_values, 14)
+        else:
+            ind['obv'] = 0
+            ind['obv_trend'] = 'neutral'
 
-    # False breakout
-    ind['breakout'] = detect_false_breakout(price_storage.highs, price_storage.lows, price_storage.closes)
+        # ATR
+        atr, atr_pct = calculate_atr(price_storage.highs, price_storage.lows, price_storage.closes, 14)
+        ind['atr'] = atr
+        ind['atr_percent'] = atr_pct
 
-    # Нормализованная оценка
-    ind['ml_score'] = calculate_normalized_score(ind)
+        # Support / Resistance
+        sup, res, ns, nr = find_support_resistance(h, l, c)
+        ind['support_levels'] = sup
+        ind['resistance_levels'] = res
+        ind['nearest_support'] = ns
+        ind['nearest_resistance'] = nr
+        ind['distance_to_support'] = (cur - ns) * 10000 if ns else 0
+        ind['distance_to_resistance'] = (nr - cur) * 10000 if nr else 0
 
-    # Преобразуем ml_score в вероятности для совместимости с generate_message
-    if ind['ml_score'] >= 0:
-        ind['prob_up'] = 50 + ind['ml_score'] / 2
-        ind['prob_down'] = 50 - ind['ml_score'] / 2
-    else:
-        ind['prob_up'] = 50 + ind['ml_score'] / 2  # ml_score отрицательный, prob_up < 50
-        ind['prob_down'] = 50 - ind['ml_score'] / 2
-    ind['confidence'] = abs(ind['ml_score'])
+        # False breakout
+        ind['breakout'] = detect_false_breakout(price_storage.highs, price_storage.lows, price_storage.closes)
 
-    # ML модель (если есть)
-    ind['ml_prob_up'] = ml_gen.predict(ind)
+        # Нормализованная оценка
+        ind['ml_score'] = calculate_normalized_score(ind)
 
-    ind['price'] = cur
-    ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
-    price_storage.last_signal = ind
-    return ind
+        # Преобразуем ml_score в вероятности для совместимости с generate_message
+        if ind['ml_score'] >= 0:
+            ind['prob_up'] = 50 + ind['ml_score'] / 2
+            ind['prob_down'] = 50 - ind['ml_score'] / 2
+        else:
+            ind['prob_up'] = 50 + ind['ml_score'] / 2  # ml_score отрицательный, prob_up < 50
+            ind['prob_down'] = 50 - ind['ml_score'] / 2
+        ind['confidence'] = abs(ind['ml_score'])
+
+        # ML модель (если есть)
+        ind['ml_prob_up'] = ml_gen.predict(ind)
+
+        ind['price'] = cur
+        ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
+        price_storage.last_signal = ind
+        return ind
+    except Exception as e:
+        logger.error(f"Error in get_indicators: {e}")
+        return None
 
 
 # ========== КЛАВИАТУРЫ ==========
@@ -636,7 +645,8 @@ def webhook():
         if 'callback_query' in data:
             chat_id = data['callback_query']['from']['id']
             cb = data['callback_query']['data']
-            loop.run_until_complete(handle_callback(chat_id, cb))
+            cb_id = data['callback_query']['id']          # ID callback'а для answer_callback_query
+            loop.run_until_complete(handle_callback(chat_id, cb, cb_id))
         elif 'message' in data and 'text' in data['message']:
             chat_id = data['message']['chat']['id']
             text = data['message']['text']
@@ -648,32 +658,44 @@ def webhook():
         return jsonify({'ok': False}), 500
 
 
-async def handle_callback(chat_id, cb):
+async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
-    if cb == 'signal':
-        await send_signal(bot, chat_id)
-    elif cb == 'status':
-        await send_status(bot, chat_id)
-    elif cb == 'auto_on':
-        with subscribers_lock:
-            subscribers.add(chat_id)
-            save_subscribers(subscribers)
-            logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
-        await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
-    elif cb == 'auto_off':
-        with subscribers_lock:
-            if chat_id in subscribers:
-                subscribers.remove(chat_id)
+    try:
+        # Обязательно отвечаем на callback, чтобы Telegram не повторял запрос
+        await bot.answer_callback_query(cb_id)
+
+        if cb == 'signal':
+            await send_signal(bot, chat_id)
+        elif cb == 'status':
+            await send_status(bot, chat_id)
+        elif cb == 'auto_on':
+            with subscribers_lock:
+                subscribers.add(chat_id)
                 save_subscribers(subscribers)
-                await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
-                logger.info(f"⏹️ Подписчик {chat_id} удалён")
-            else:
-                await bot.send_message(chat_id, "❌ Автосигналы не были включены")
-    elif cb == 'back':
-        await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
-    else:
-        await bot.send_message(chat_id, "❓ Неизвестная команда")
+                logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
+            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
+        elif cb == 'auto_off':
+            with subscribers_lock:
+                if chat_id in subscribers:
+                    subscribers.remove(chat_id)
+                    save_subscribers(subscribers)
+                    await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+                    logger.info(f"⏹️ Подписчик {chat_id} удалён")
+                else:
+                    await bot.send_message(chat_id, "❌ Автосигналы не были включены")
+        elif cb == 'back':
+            await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
+        else:
+            # Неизвестный callback (например, старые кнопки)
+            await bot.send_message(chat_id, "❓ Неизвестная команда или устаревшая кнопка")
+            logger.warning(f"Unknown callback: {cb} from {chat_id}")
+    except Exception as e:
+        logger.error(f"Error in handle_callback: {e}")
+        try:
+            await bot.send_message(chat_id, "⚠️ Внутренняя ошибка при обработке запроса")
+        except:
+            pass
 
 
 async def handle_message(chat_id, text):
