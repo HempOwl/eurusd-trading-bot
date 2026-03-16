@@ -1028,7 +1028,8 @@ async def auto_worker():
                                 await bot.send_message(uid, generate_message(ind, symbol), parse_mode='Markdown')
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
                             else:
-                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {ind.get('confidence', 0):.1f}% < 65)")
+                                conf = ind.get('confidence', 0) if ind else 0
+                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 65)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
                 except Exception as e:
