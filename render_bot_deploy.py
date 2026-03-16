@@ -82,7 +82,6 @@ class MLSignalGenerator:
         joblib.dump(self.model, self.model_path)
 
     def prepare_features(self, ind):
-        # Вектор признаков для модели
         features = [
             ind.get('rsi', 50),
             ind.get('macd', 0),
@@ -98,6 +97,20 @@ class MLSignalGenerator:
             ind.get('obv', 0),
         ]
         return features
+
+    def predict(self, ind):
+        if self.model is None:
+            return 0.5
+        try:
+            if not hasattr(self.model, 'estimators_'):
+                return 0.5
+            features = self.prepare_features(ind)
+            X = np.array(features).reshape(1, -1)
+            proba = self.model.predict_proba(X)[0]
+            return proba[1]
+        except Exception as e:
+            logger.warning(f"ML model not fitted or error: {e}")
+            return 0.5
 
     def predict(self, ind):
         if self.model is None:
@@ -494,7 +507,7 @@ async def get_indicators():
         cur = c[-1]
         ind = {}
         ind['price'] = cur
-        
+
         # RSI
         ind['rsi'] = rsi(c, 14)
         if ind['rsi'] > 70:
