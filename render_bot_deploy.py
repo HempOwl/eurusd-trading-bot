@@ -798,7 +798,7 @@ def generate_candlestick_chart(symbol, storage, levels):
             type='candle',
             style=style,
             volume=True,
-            alines=dict(alines=alines, colors=colors, linewidths=1, linestyles='dashed'),
+            alines=dict(alines=alines, colors=colors, linewidths=1, linestyle='dashed'),
             savefig=dict(fname=buf, format='png', dpi=100, bbox_inches='tight')
         )
     else:
