@@ -461,51 +461,89 @@ def pivot_points(high, low, close):
 def calculate_normalized_score(ind):
     score = 0
     max_score = 0
+
+    # Фиксированные веса
+    weight_rsi = 2
+    weight_macd = 2
+    weight_bb = 2
+    weight_ema = 1
+    weight_sr = 2
+    weight_3min = 1
+
+    # Динамические веса для ADX и Stochastic
+    adx_value = ind.get('adx', 0)
+    if adx_value < 20:          # флэт
+        weight_adx = 1
+        weight_stoch = 3
+    elif adx_value > 25:         # сильный тренд
+        weight_adx = 3
+        weight_stoch = 1
+    else:                        # переходная зона
+        weight_adx = 2
+        weight_stoch = 2
+
+    # RSI
     if ind['rsi'] < 30:
-        score += 2
+        score += weight_rsi
     elif ind['rsi'] > 70:
-        score -= 2
-    max_score += 2
+        score -= weight_rsi
+    max_score += weight_rsi
+
+    # MACD
     if ind['macd'] > 0:
-        score += 2
+        score += weight_macd
     else:
-        score -= 2
-    max_score += 2
+        score -= weight_macd
+    max_score += weight_macd
+
+    # Bollinger Bands
     price = ind['price']
     if price <= ind['bb_lower']:
-        score += 2
+        score += weight_bb
     elif price >= ind['bb_upper']:
-        score -= 2
-    max_score += 2
+        score -= weight_bb
+    max_score += weight_bb
+
+    # EMA тренд
     if ind['ema'][5] > ind['ema'][20]:
-        score += 1
+        score += weight_ema
     else:
-        score -= 1
-    max_score += 1
+        score -= weight_ema
+    max_score += weight_ema
+
+    # ADX (с динамическим весом)
     if ind.get('adx', 0) > 25:
         if ind['plus_di'] > ind['minus_di']:
-            score += 3
+            score += weight_adx
         else:
-            score -= 3
-        max_score += 3
-    if ind.get('stoch_k', 50) < 20:
-        score += 2
-    elif ind.get('stoch_k', 50) > 80:
-        score -= 2
-    max_score += 2
+            score -= weight_adx
+    max_score += weight_adx   # всегда добавляем вес к max_score
+
+    # Stochastic (с динамическим весом)
+    stoch_k = ind.get('stoch_k', 50)
+    if stoch_k < 20:
+        score += weight_stoch
+    elif stoch_k > 80:
+        score -= weight_stoch
+    max_score += weight_stoch
+
+    # Поддержка/сопротивление
     dist_to_sup = ind.get('distance_to_support', 1000)
     dist_to_res = ind.get('distance_to_resistance', 1000)
     if dist_to_sup < 10 and dist_to_sup < dist_to_res:
-        score += 2
+        score += weight_sr
     elif dist_to_res < 10 and dist_to_res < dist_to_sup:
-        score -= 2
-    max_score += 2
+        score -= weight_sr
+    max_score += weight_sr
+
+    # 3-минутное изменение
     change = ind.get('change_3min', 0)
     if change > 0.0001:
-        score += 1
+        score += weight_3min
     elif change < -0.0001:
-        score -= 1
-    max_score += 1
+        score -= weight_3min
+    max_score += weight_3min
+
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
@@ -773,7 +811,7 @@ def before_request():
 
 @app.route('/')
 def index():
-    return "<h1>Forex Signal Bot</h1><p>Running with multiple pairs</p>"
+    return "<h1>Currency pair</h1><p>Running</p>"
 
 @app.route('/health')
 def health():
@@ -844,7 +882,7 @@ async def handle_callback(chat_id, cb, cb_id):
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
-        await bot.send_message(chat_id, "🤖 Forex Signal Bot", reply_markup=main_menu())
+        await bot.send_message(chat_id, "Currency pair", reply_markup=main_menu())
     elif text == '/signal':
         await send_signal(bot, chat_id)
     elif text == '/status':
