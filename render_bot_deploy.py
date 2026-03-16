@@ -997,7 +997,7 @@ async def send_signal(bot, chat_id):
     if not ind:
         await bot.send_message(chat_id, "❌ Ошибка получения данных для EUR/USD")
         return
-    if ind['confidence'] < 13:
+    if ind['confidence'] < 3.3:
         await bot.send_message(chat_id,
                                f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
         return
@@ -1079,7 +1079,7 @@ async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
     while True:
         try:
-            await asyncio.sleep(180)
+            await asyncio.sleep(60)
 
             # Синхронизация подписчиков
             file_subs = load_subscribers()
@@ -1114,7 +1114,7 @@ async def auto_worker():
                         try:
                             bot = Bot(token=BOT_TOKEN)
                             ind = await get_indicators(symbol)
-                            if ind and ind.get('confidence', 0) >= 13:
+                            if ind and ind.get('confidence', 0) >= 3.3:
                                 up = ind['prob_up']
                                 down = ind['prob_down']
                                 direction = 'buy' if up > down else 'sell'
@@ -1158,7 +1158,7 @@ async def auto_worker():
                                 logger.info(f"✅ {symbol} сигнал с графиком отправлен {uid}")
                             else:
                                 conf = ind.get('confidence', 0) if ind else 0
-                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 13)")
+                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 3.3)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
                 except Exception as e:
