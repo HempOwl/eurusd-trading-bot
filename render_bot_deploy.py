@@ -1017,6 +1017,7 @@ async def send_stats(bot, chat_id):
 💸 Общий убыток: {summary['total_loss_pips']:.1f} пипсов
 📊 Чистый результат: {summary['total_profit_pips'] - summary['total_loss_pips']:.1f} пипсов
 """
+"""
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
 # ========== ФОНОВЫЙ ПОТОК ==========
