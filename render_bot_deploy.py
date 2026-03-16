@@ -1093,6 +1093,10 @@ async def auto_worker():
                 except Exception as e:
                     logger.error(f"❌ Ошибка отправки для {uid}: {e}")
 
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
+            await asyncio.sleep(10)
+
 
 def start_worker():
     loop = asyncio.new_event_loop()
