@@ -7,6 +7,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+import time
 
 # Для машинного обучения (пока заготовка)
 from sklearn.ensemble import RandomForestClassifier
@@ -63,7 +64,130 @@ def save_subscribers(subs):
 
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
+#======================================================================
 
+class StatsManager:
+    def __init__(self, stats_file='stats.json'):
+        self.stats_file = stats_file
+        self.signals = []
+        self.load_stats()
+
+    def load_stats(self):
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, 'r') as f:
+                    self.signals = json.load(f)
+                logger.info(f"📊 Загружено записей статистики: {len(self.signals)}")
+            except Exception as e:
+                logger.error(f"Ошибка загрузки статистики: {e}")
+                self.signals = []
+        else:
+            self.signals = []
+
+    def save_stats(self):
+        try:
+            with open(self.stats_file, 'w') as f:
+                json.dump(self.signals, f, indent=2)
+            logger.info(f"💾 Статистика сохранена: {len(self.signals)} записей")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения статистики: {e}")
+
+    def add_signal(self, signal):
+        self.signals.append(signal)
+        self.save_stats()
+
+    def update_results(self, current_price):
+        updated = False
+        for sig in self.signals:
+            if sig.get('result') is not None:
+                continue
+            # Тайм-аут через 1 час
+            if time.time() - sig['timestamp'] > 3600:
+                sig['result'] = 'timeout'
+                sig['exit_price'] = current_price
+                sig['exit_time'] = time.time()
+                updated = True
+                continue
+
+            direction = sig['direction']
+            entry = sig['price']
+            tp = sig.get('tp')
+            sl = sig.get('sl')
+
+            if direction == 'buy':
+                if tp and current_price >= tp:
+                    sig['result'] = 'profit'
+                    sig['exit_price'] = tp
+                    sig['exit_time'] = time.time()
+                    updated = True
+                elif sl and current_price <= sl:
+                    sig['result'] = 'loss'
+                    sig['exit_price'] = sl
+                    sig['exit_time'] = time.time()
+                    updated = True
+            elif direction == 'sell':
+                if tp and current_price <= tp:
+                    sig['result'] = 'profit'
+                    sig['exit_price'] = tp
+                    sig['exit_time'] = time.time()
+                    updated = True
+                elif sl and current_price >= sl:
+                    sig['result'] = 'loss'
+                    sig['exit_price'] = sl
+                    sig['exit_time'] = time.time()
+                    updated = True
+
+        if updated:
+            self.save_stats()
+
+    def get_summary(self):
+        total = len(self.signals)
+        if total == 0:
+            return {
+                'total': 0, 'profit': 0, 'loss': 0, 'timeout': 0, 'unknown': 0,
+                'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0,
+                'total_profit_pips': 0, 'total_loss_pips': 0
+            }
+        profit = sum(1 for s in self.signals if s.get('result') == 'profit')
+        loss = sum(1 for s in self.signals if s.get('result') == 'loss')
+        timeout = sum(1 for s in self.signals if s.get('result') == 'timeout')
+        unknown = total - profit - loss - timeout
+
+        total_profit_pips = 0
+        total_loss_pips = 0
+        for s in self.signals:
+            if s.get('result') == 'profit' and s.get('exit_price') and s.get('price'):
+                if s['direction'] == 'buy':
+                    pips = (s['exit_price'] - s['price']) * 10000
+                else:
+                    pips = (s['price'] - s['exit_price']) * 10000
+                total_profit_pips += pips
+            elif s.get('result') == 'loss' and s.get('exit_price') and s.get('price'):
+                if s['direction'] == 'buy':
+                    pips = (s['exit_price'] - s['price']) * 10000
+                else:
+                    pips = (s['price'] - s['exit_price']) * 10000
+                total_loss_pips += abs(pips)
+
+        win_rate = (profit / (profit + loss) * 100) if (profit + loss) > 0 else 0
+        avg_profit = total_profit_pips / profit if profit > 0 else 0
+        avg_loss = total_loss_pips / loss if loss > 0 else 0
+
+        return {
+            'total': total,
+            'profit': profit,
+            'loss': loss,
+            'timeout': timeout,
+            'unknown': unknown,
+            'win_rate': win_rate,
+            'avg_profit': avg_profit,
+            'avg_loss': avg_loss,
+            'total_profit_pips': total_profit_pips,
+            'total_loss_pips': total_loss_pips
+        }
+
+
+stats_manager = StatsManager()
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ (ЗАГОТОВКА) ==========
 class MLSignalGenerator:
@@ -624,8 +748,9 @@ def main_menu():
     kb = [
         [InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
          InlineKeyboardButton("📈 Статус", callback_data='status')],
-        [InlineKeyboardButton("🔔 Автосигнал (5 мин)", callback_data='auto_on'),
-         InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
+        [InlineKeyboardButton("📊 Статистика", callback_data='stats'),
+         InlineKeyboardButton("🔔 Автосигнал (5 мин)", callback_data='auto_on')],
+        [InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -685,6 +810,8 @@ async def handle_callback(chat_id, cb, cb_id):
             await send_signal(bot, chat_id)
         elif cb == 'status':
             await send_status(bot, chat_id)
+            elif cb == 'stats':
+            await send_stats(bot, chat_id)
         elif cb == 'auto_on':
             with subscribers_lock:
                 subscribers.add(chat_id)
@@ -723,6 +850,9 @@ async def handle_message(chat_id, text):
     elif text == '/status':
         await send_status(bot, chat_id)
     elif text == '/stop':
+        elif text == '/stats':
+        await send_stats(bot, chat_id)
+    elif text == '/stop':
         with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
@@ -740,7 +870,37 @@ async def send_signal(bot, chat_id):
     if not ind:
         await bot.send_message(chat_id, "❌ Ошибка получения данных")
         return
-    await bot.send_message(chat_id, generate_message(ind), parse_mode='Markdown')
+
+    up = ind['prob_up']
+    down = ind['prob_down']
+    direction = 'buy' if up > down else 'sell'
+    entry = ind['price']
+    atr = ind.get('atr', 0.001)  # запасное значение
+    tp_distance = atr * 1.5
+    sl_distance = atr * 0.75
+
+    if direction == 'buy':
+        tp = entry + tp_distance
+        sl = entry - sl_distance
+    else:
+        tp = entry - tp_distance
+        sl = entry + sl_distance
+
+    # Сохраняем сигнал в статистику
+    signal_record = {
+        'timestamp': time.time(),
+        'price': entry,
+        'direction': direction,
+        'tp': tp,
+        'sl': sl,
+        'result': None,
+        'exit_price': None,
+        'exit_time': None
+    }
+    stats_manager.add_signal(signal_record)
+
+    msg = generate_message(ind)
+    await bot.send_message(chat_id, msg, parse_mode='Markdown')
 
 
 async def send_status(bot, chat_id):
@@ -748,6 +908,28 @@ async def send_status(bot, chat_id):
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nСвечей: {len(price_storage.closes)}")
 
+async def send_stats(bot, chat_id):
+    summary = stats_manager.get_summary()
+    if summary['total'] == 0:
+        await bot.send_message(chat_id, "📊 Статистика пока пуста.")
+        return
+
+    text = f"""📊 *Статистика сигналов*
+
+Всего сигналов: {summary['total']}
+✅ Прибыльных: {summary['profit']}
+❌ Убыточных: {summary['loss']}
+⏳ Истекло: {summary['timeout']}
+❓ Неизвестно: {summary['unknown']}
+
+📈 Винрейт: {summary['win_rate']:.1f}%
+💰 Средняя прибыль: {summary['avg_profit']:.1f} пипсов
+📉 Средний убыток: {summary['avg_loss']:.1f} пипсов
+💵 Общая прибыль: {summary['total_profit_pips']:.1f} пипсов
+💸 Общий убыток: {summary['total_loss_pips']:.1f} пипсов
+📊 Чистый результат: {summary['total_profit_pips'] - summary['total_loss_pips']:.1f} пипсов
+"""
+    await bot.send_message(chat_id, text, parse_mode='Markdown')
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
@@ -774,6 +956,11 @@ async def auto_worker():
                 logger.info(f"✅ Добавлена новая свеча: {new_candle.get('datetime')} = {new_candle.get('close')}")
             else:
                 logger.warning("⚠️ Не удалось получить новую свечу, сигнал будет на старых данных")
+
+            # Обновляем результаты старых сигналов
+            if new_candle:
+                current_price = float(new_candle['close'])
+                stats_manager.update_results(current_price)
 
             # Рассылаем сигналы подписчикам
             if not subs:
