@@ -953,12 +953,15 @@ async def send_signal(bot, chat_id):
     if not ind:
         await bot.send_message(chat_id, "❌ Ошибка получения данных")
         return
+    if ind['confidence'] < 65:
+        await bot.send_message(chat_id, f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
+        return
 
     up = ind['prob_up']
     down = ind['prob_down']
     direction = 'buy' if up > down else 'sell'
     entry = ind['price']
-    atr = ind.get('atr', 0.001)  # запасное значение
+    atr = ind.get('atr', 0.001)
     tp_distance = atr * 1.5
     sl_distance = atr * 0.75
 
@@ -969,7 +972,6 @@ async def send_signal(bot, chat_id):
         tp = entry - tp_distance
         sl = entry + sl_distance
 
-    # Сохраняем сигнал в статистику
     signal_record = {
         'timestamp': time.time(),
         'price': entry,
@@ -1055,17 +1057,41 @@ async def auto_worker():
                 try:
                     bot = Bot(token=BOT_TOKEN)
                     ind = await get_indicators()
-                    if ind:
+                    if ind and ind.get('confidence', 0) >= 65:
+                        # Сохраняем сигнал в статистику
+                        up = ind['prob_up']
+                        down = ind['prob_down']
+                        direction = 'buy' if up > down else 'sell'
+                        entry = ind['price']
+                        atr = ind.get('atr', 0.001)
+                        tp_distance = atr * 1.5
+                        sl_distance = atr * 0.75
+                        if direction == 'buy':
+                            tp = entry + tp_distance
+                            sl = entry - sl_distance
+                        else:
+                            tp = entry - tp_distance
+                            sl = entry + sl_distance
+
+                        signal_record = {
+                            'timestamp': time.time(),
+                            'price': entry,
+                            'direction': direction,
+                            'tp': tp,
+                            'sl': sl,
+                            'result': None,
+                            'exit_price': None,
+                            'exit_time': None
+                        }
+                        stats_manager.add_signal(signal_record)
+
                         await bot.send_message(uid, generate_message(ind), parse_mode='Markdown')
                         logger.info(f"✅ Сигнал отправлен {uid}")
                     else:
-                        await bot.send_message(uid, "❌ Ошибка получения сигнала")
-                        logger.error(f"❌ Нет индикаторов для {uid}")
+                        # Сигнал не отправляется и не сохраняется в статистику
+                        logger.info(f"📉 Сигнал для {uid} пропущен (уверенность {ind.get('confidence', 0):.1f}% < 65)")
                 except Exception as e:
                     logger.error(f"❌ Ошибка отправки для {uid}: {e}")
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
-            await asyncio.sleep(10)
 
 
 def start_worker():
