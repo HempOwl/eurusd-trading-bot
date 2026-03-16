@@ -74,12 +74,19 @@ class MLSignalGenerator:
 
     def load_model(self):
         if os.path.exists(self.model_path):
-            self.model = joblib.load(self.model_path)
+            try:
+                self.model = joblib.load(self.model_path)
+                logger.info(f"ML model loaded from {self.model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load model: {e}")
+                self.model = None
         else:
-            self.model = RandomForestClassifier(n_estimators=10)
+            logger.info("No model file found, ML disabled")
+            self.model = None
 
     def save_model(self):
-        joblib.dump(self.model, self.model_path)
+        if self.model is not None:
+            joblib.dump(self.model, self.model_path)
 
     def prepare_features(self, ind):
         features = [
@@ -107,19 +114,14 @@ class MLSignalGenerator:
             features = self.prepare_features(ind)
             X = np.array(features).reshape(1, -1)
             proba = self.model.predict_proba(X)[0]
-            return proba[1]
+            # Защита от случая, когда predict_proba возвращает один класс
+            if len(proba) > 1:
+                return proba[1]
+            else:
+                return proba[0]
         except Exception as e:
-            logger.warning(f"ML model not fitted or error: {e}")
+            logger.warning(f"ML prediction error: {e}")
             return 0.5
-
-    def predict(self, ind):
-        if self.model is None:
-            return 0.5  # нейтрально
-        features = self.prepare_features(ind)
-        X = np.array(features).reshape(1, -1)
-        proba = self.model.predict_proba(X)[0]
-        # Предполагаем класс 1 = вверх, 0 = вниз
-        return proba[1]
 
 
 # Глобальный объект ML (создаётся один раз)
