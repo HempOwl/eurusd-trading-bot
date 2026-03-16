@@ -10,3 +10,6 @@ python-dotenv
 mplfinance
 scipy
 pandas
+requests
+pytz
+asyncpg
