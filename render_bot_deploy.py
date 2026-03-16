@@ -493,7 +493,8 @@ async def get_indicators():
         l = price_storage.lows
         cur = c[-1]
         ind = {}
-
+        ind['price'] = cur
+        
         # RSI
         ind['rsi'] = rsi(c, 14)
         if ind['rsi'] > 70:
