@@ -883,7 +883,7 @@ def main_menu():
         [InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
          InlineKeyboardButton("📈 Статус", callback_data='status')],
         [InlineKeyboardButton("📊 Статистика", callback_data='stats'),
-         InlineKeyboardButton("🔔 Автосигнал (5 мин)", callback_data='auto_on')],
+         InlineKeyboardButton("🔔 Автосигнал (3 мин)", callback_data='auto_on')],
         [InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
@@ -1067,7 +1067,7 @@ async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
     while True:
         try:
-            await asyncio.sleep(290)  # 5 минут
+            await asyncio.sleep(180)  # 3 минуты
 
             # Синхронизация подписчиков с файлом
             file_subs = load_subscribers()
