@@ -47,14 +47,25 @@ class Database:
     def __init__(self):
         self.pool = None
 
-    async def connect(self):
-        """Создание пула соединений с базой данных"""
+    async def connect(self, max_retries: int = 5, retry_delay: int = 2):
+        """Создание пула соединений с повторными попытками при ошибках"""
         db_url = DATABASE_URL
         if 'sslmode' not in db_url:
             db_url += '?sslmode=require'
 
-        self.pool = await asyncpg.create_pool(db_url)
-        logger.info("✅ Подключение к PostgreSQL установлено")
+        for attempt in range(max_retries):
+            try:
+                self.pool = await asyncpg.create_pool(db_url)
+                logger.info(f"✅ Подключение к PostgreSQL установлено (попытка {attempt + 1})")
+                await self.init_tables()
+                return # Успех, выходим из функции
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка подключения к БД (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt)) # Экспоненциальная задержка
+                else:
+                    logger.error(f"❌ Не удалось подключиться к БД после {max_retries} попыток.")
+                    raise # Если все попытки исчерпаны, пробрасываем исключение дальше
 
         # Создаём таблицы, если их нет
         await self.init_tables()
