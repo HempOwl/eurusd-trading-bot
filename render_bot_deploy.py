@@ -64,8 +64,10 @@ def save_subscribers(subs):
 
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
-#======================================================================
 
+# ======================================================================
+# Класс для управления статистикой сигналов
+# ======================================================================
 class StatsManager:
     def __init__(self, stats_file='stats.json'):
         self.stats_file = stats_file
@@ -847,8 +849,7 @@ async def handle_message(chat_id, text):
         await send_signal(bot, chat_id)
     elif text == '/status':
         await send_status(bot, chat_id)
-    elif text == '/stop':
-        elif text == '/stats':
+    elif text == '/stats':
         await send_stats(bot, chat_id)
     elif text == '/stop':
         with subscribers_lock:
