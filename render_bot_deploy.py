@@ -613,7 +613,6 @@ def generate_message(ind):
             arrow = "⬆️" if ind['change_3min'] > 0 else "⬇️" if ind['change_3min'] < 0 else "➡️"
             msg += f"\n📊 *3 мин изменение*: {arrow} {ind['change_3min_pct']:.3f}%"
 
-        msg += f"\n\n#{'BUY' if up > down else 'SELL'} #EURUSD"
         return msg
     except KeyError as e:
         logger.error(f"KeyError in generate_message: {e}")
