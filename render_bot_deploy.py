@@ -564,7 +564,6 @@ def calculate_normalized_score(ind):
 
 def generate_message(ind):
     try:
-        price = ind['price']
         up = ind['prob_up']
         down = ind['prob_down']
         conf = ind['confidence']
@@ -591,11 +590,13 @@ def generate_message(ind):
 └─ ⬇️ ВНИЗ: {down:.1f}%
 🎯 Уверенность: {conf:.1f}%
 💡 Рекомендация: {rec}
+"""
 
+        # ATR
         if 'atr_percent' in ind:
             msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
-        if 'breakout' in ind and ind['breakout'] != 'no_breakout':
-            msg += f"\n🚩 *Пробой*: {ind['breakout']}"
+
+        # ML вероятность
         if 'ml_prob_up' in ind:
             msg += f"\n🤖 *ML вероятность*: {ind['ml_prob_up'] * 100:.1f}%"
 
@@ -606,10 +607,6 @@ def generate_message(ind):
         # Stochastic
         if 'stoch_k' in ind:
             msg += f"\n📊 *Stochastic*: %K={ind['stoch_k']:.1f} %D={ind['stoch_d']:.1f}"
-
-        # Pivot Points
-        if 'pivot' in ind:
-            msg += f"\n📍 *Pivot*: {ind['pivot']:.5f} | R1:{ind['r1']:.5f} S1:{ind['s1']:.5f}"
 
         # 3-минутное изменение
         if 'change_3min_pct' in ind:
@@ -624,7 +621,6 @@ def generate_message(ind):
     except Exception as e:
         logger.error(f"Unexpected error in generate_message: {e}")
         return "❌ Внутренняя ошибка при формировании сигнала"
-
 
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 async def fetch_candles(api_key, bars=50):
@@ -1002,7 +998,7 @@ async def send_stats(bot, chat_id):
         await bot.send_message(chat_id, "📊 Статистика пока пуста.")
         return
 
-text = f"""[Стат] *Статистика сигналов*
+    text = f"""📊 *Статистика сигналов*
 
 Всего сигналов: {summary['total']}
 ✅ Прибыльных: {summary['profit']}
@@ -1016,7 +1012,6 @@ text = f"""[Стат] *Статистика сигналов*
 💵 Общая прибыль: {summary['total_profit_pips']:.1f} пипсов
 💸 Общий убыток: {summary['total_loss_pips']:.1f} пипсов
 📊 Чистый результат: {summary['total_profit_pips'] - summary['total_loss_pips']:.1f} пипсов
-"""
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
