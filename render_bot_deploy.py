@@ -6,8 +6,13 @@ import json
 from datetime import datetime
 from flask import Flask, request, jsonify
 import aiohttp
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 import time
+import pandas as pd
+import numpy as np
+import mplfinance as mpf
+import io
+from scipy.signal import argrelextrema
 
 # Для машинного обучения (пока заготовка)
 from sklearn.ensemble import RandomForestClassifier
@@ -67,6 +72,7 @@ def save_subscribers(subs):
 
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
+
 
 # ======================================================================
 # Класс для управления статистикой сигналов (теперь с учётом символа)
@@ -194,6 +200,7 @@ class StatsManager:
 
 stats_manager = StatsManager()
 
+
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
     def __init__(self, model_path='model.pkl'):
@@ -254,6 +261,7 @@ class MLSignalGenerator:
 
 ml_gen = MLSignalGenerator()
 
+
 # ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ ==========
 class PriceStorage:
     def __init__(self, maxlen=200):
@@ -289,11 +297,13 @@ class PriceStorage:
 # Создаём хранилище для каждой пары
 price_storages = {sym: PriceStorage() for sym in SYMBOLS}
 
-# ========== ФУНКЦИИ ИНДИКАТОРОВ (без изменений, работают с переданными списками) ==========
+
+# ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
 def sma(data, period):
     if len(data) < period:
         return data[-1]
     return sum(data[-period:]) / period
+
 
 def ema(data, period):
     if len(data) < period:
@@ -303,6 +313,7 @@ def ema(data, period):
     for price in data[-period + 1:]:
         ema_val = (price - ema_val) * multiplier + ema_val
     return ema_val
+
 
 def rsi(data, period=14):
     if len(data) < period + 1:
@@ -323,6 +334,7 @@ def rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
 def bbands(data, period=20, std=2):
     if len(data) < period:
         m = data[-1]
@@ -332,10 +344,12 @@ def bbands(data, period=20, std=2):
     s = variance ** 0.5
     return m + std * s, m, m - std * s
 
+
 def macd(data, fast=12, slow=26):
     if len(data) < slow:
         return 0.0
     return ema(data, fast) - ema(data, slow)
+
 
 def calculate_atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
@@ -350,6 +364,7 @@ def calculate_atr(highs, lows, closes, period=14):
     atr_percentage = (atr / closes[-1]) * 100
     return atr, atr_percentage
 
+
 def calculate_obv(closes, volumes):
     if len(closes) < 2 or len(volumes) < 2:
         return [0]
@@ -363,11 +378,13 @@ def calculate_obv(closes, volumes):
             obv.append(obv[-1])
     return obv
 
+
 def obv_trend(obv_values, period=14):
     if len(obv_values) < period:
         return "neutral"
     obv_ema = ema(obv_values, period)
     return "bullish" if obv_values[-1] > obv_ema else "bearish"
+
 
 def detect_false_breakout(highs, lows, closes, lookback=5):
     if len(closes) < lookback + 2:
@@ -387,6 +404,7 @@ def detect_false_breakout(highs, lows, closes, lookback=5):
             return "valid_breakout_down"
     return "no_breakout"
 
+
 def find_support_resistance(high, low, close, window=5):
     supports, resistances = [], []
     n = len(close)
@@ -397,6 +415,7 @@ def find_support_resistance(high, low, close, window=5):
         if all(high[i] >= high[i - j] for j in range(1, window + 1)) and \
                 all(high[i] >= high[i + j] for j in range(1, window + 1)):
             resistances.append(high[i])
+
     def cluster(levels, thr=0.0005):
         if not levels:
             return []
@@ -411,6 +430,7 @@ def find_support_resistance(high, low, close, window=5):
                 cl = [lev]
         res.append(sum(cl) / len(cl))
         return res
+
     supports = cluster(supports)
     resistances = cluster(resistances)
     cur = close[-1]
@@ -425,6 +445,7 @@ def find_support_resistance(high, low, close, window=5):
             break
     return supports[-3:], resistances[-3:], ns, nr
 
+
 def adx(highs, lows, closes, period=14):
     if len(closes) < period + 1:
         return 0, 0, 0
@@ -433,11 +454,11 @@ def adx(highs, lows, closes, period=14):
     minus_dm = []
     for i in range(1, len(closes)):
         hl = highs[i] - lows[i]
-        hc = abs(highs[i] - closes[i-1])
-        lc = abs(lows[i] - closes[i-1])
+        hc = abs(highs[i] - closes[i - 1])
+        lc = abs(lows[i] - closes[i - 1])
         tr.append(max(hl, hc, lc))
-        up_move = highs[i] - highs[i-1]
-        down_move = lows[i-1] - lows[i]
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
         plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0)
         minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0)
     atr = sum(tr[-period:]) / period
@@ -446,6 +467,7 @@ def adx(highs, lows, closes, period=14):
     dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
     adx_val = sum([dx] * period) / period
     return adx_val, plus_di, minus_di
+
 
 def stochastic(highs, lows, closes, k_period=14, d_period=3):
     if len(closes) < k_period + d_period:
@@ -456,6 +478,7 @@ def stochastic(highs, lows, closes, k_period=14, d_period=3):
     d = sum([k] * d_period) / d_period
     return k, d
 
+
 def pivot_points(high, low, close):
     pivot = (high + low + close) / 3
     r1 = 2 * pivot - low
@@ -465,6 +488,7 @@ def pivot_points(high, low, close):
     s2 = pivot - (high - low)
     s3 = low - 2 * (high - pivot)
     return pivot, r1, r2, r3, s1, s2, s3
+
 
 def calculate_normalized_score(ind):
     score = 0
@@ -517,6 +541,7 @@ def calculate_normalized_score(ind):
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
+
 # ========== ЗАГРУЗКА ДАННЫХ ДЛЯ КОНКРЕТНОЙ ПАРЫ ==========
 async def fetch_candles(symbol, api_key, bars=50):
     url = "https://api.twelvedata.com/time_series"
@@ -535,6 +560,7 @@ async def fetch_candles(symbol, api_key, bars=50):
     except Exception as e:
         logger.error(f"fetch error for {symbol}: {e}")
     return None
+
 
 async def fetch_last_candle(symbol, api_key):
     url = "https://api.twelvedata.com/time_series"
@@ -556,6 +582,7 @@ async def fetch_last_candle(symbol, api_key):
         logger.error(f"fetch_last_candle error for {symbol}: {e}")
     return None
 
+
 async def update_prices(symbol):
     candles = await fetch_candles(symbol, TWELVE_API_KEY, 200)
     if candles:
@@ -564,6 +591,7 @@ async def update_prices(symbol):
             price_storages[symbol].add_candle(c)
         return True
     return False
+
 
 async def get_indicators(symbol):
     storage = price_storages.get(symbol)
@@ -721,6 +749,70 @@ async def get_indicators(symbol):
         logger.error(f"Error in get_indicators for {symbol}: {e}")
         return None
 
+
+# ========== ФУНКЦИИ ДЛЯ ГЕНЕРАЦИИ ГРАФИКА ==========
+def generate_candlestick_chart(symbol, storage, levels):
+    """
+    Генерирует PNG с японскими свечами и уровнями поддержки/сопротивления.
+    Возвращает буфер с изображением.
+    """
+    # Создаём DataFrame
+    df = pd.DataFrame({
+        'Open': storage.opens,
+        'High': storage.highs,
+        'Low': storage.lows,
+        'Close': storage.closes,
+        'Volume': storage.volumes
+    })
+    # Индекс по времени (последние len(storage.closes) минут)
+    df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='1min')
+
+    # Берём последние 30 свечей для наглядности
+    df_last = df.tail(30)
+
+    # Подготавливаем линии уровней
+    alines = []
+    colors = []
+
+    for level in levels['support']:
+        alines.append([(df_last.index[0], level), (df_last.index[-1], level)])
+        colors.append('green')
+
+    for level in levels['resistance']:
+        alines.append([(df_last.index[0], level), (df_last.index[-1], level)])
+        colors.append('red')
+
+    # Стиль
+    mc = mpf.make_marketcolors(
+        up='g', down='r',
+        wick={'up': 'green', 'down': 'red'},
+        volume='in'
+    )
+    style = mpf.make_mpf_style(marketcolors=mc, gridstyle='--')
+
+    # Сохраняем в буфер
+    buf = io.BytesIO()
+    if alines:
+        mpf.plot(
+            df_last,
+            type='candle',
+            style=style,
+            volume=True,
+            alines=dict(alines=alines, colors=colors, linewidths=1, linestyles='dashed'),
+            savefig=dict(fname=buf, format='png', dpi=100, bbox_inches='tight')
+        )
+    else:
+        mpf.plot(
+            df_last,
+            type='candle',
+            style=style,
+            volume=True,
+            savefig=dict(fname=buf, format='png', dpi=100, bbox_inches='tight')
+        )
+    buf.seek(0)
+    return buf
+
+
 # ========== ГЕНЕРАЦИЯ СООБЩЕНИЯ С ХЕШТЕГОМ ==========
 def generate_message(ind, symbol):
     try:
@@ -780,7 +872,8 @@ def generate_message(ind, symbol):
         logger.error(f"Unexpected error in generate_message: {e}")
         return "❌ Внутренняя ошибка при формировании сигнала"
 
-# ========== КЛАВИАТУРЫ (без выбора пар) ==========
+
+# ========== КЛАВИАТУРЫ ==========
 def main_menu():
     kb = [
         [InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
@@ -791,6 +884,7 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
+
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
@@ -799,15 +893,18 @@ def before_request():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
+
 @app.route('/')
 def index():
-    return "<h1>Forex Signal Bot</h1><p>Running with multiple pairs</p>"
+    return "<h1>Forex Signal Bot</h1><p>Running with multiple pairs and charts</p>"
+
 
 @app.route('/health')
 def health():
     with subscribers_lock:
         count = len(subscribers)
     return jsonify({'status': 'ok', 'subscribers': count})
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -830,6 +927,7 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({'ok': False}), 500
+
 
 async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
@@ -869,6 +967,7 @@ async def handle_callback(chat_id, cb, cb_id):
         except:
             pass
 
+
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
@@ -890,15 +989,17 @@ async def handle_message(chat_id, text):
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
+
 async def send_signal(bot, chat_id):
-    # Ручной режим – отправляем сигнал только для EUR/USD (можно изменить)
+    # Ручной режим – отправляем сигнал только для EUR/USD
     await bot.send_message(chat_id, "🔄 Анализирую EUR/USD...")
     ind = await get_indicators('EUR/USD')
     if not ind:
         await bot.send_message(chat_id, "❌ Ошибка получения данных для EUR/USD")
         return
-    if ind['confidence'] < 65:
-        await bot.send_message(chat_id, f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
+    if ind['confidence'] < 13:
+        await bot.send_message(chat_id,
+                               f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
         return
 
     up = ind['prob_up']
@@ -928,13 +1029,27 @@ async def send_signal(bot, chat_id):
     }
     stats_manager.add_signal(signal_record)
 
-    msg = generate_message(ind, 'EUR/USD')
-    await bot.send_message(chat_id, msg, parse_mode='Markdown')
+    # Генерация графика
+    levels = {
+        'support': ind.get('support_levels', []),
+        'resistance': ind.get('resistance_levels', [])
+    }
+    chart_buf = generate_candlestick_chart('EUR/USD', price_storages['EUR/USD'], levels)
+
+    # Отправляем фото с подписью
+    await bot.send_photo(
+        chat_id=chat_id,
+        photo=InputFile(chart_buf, filename='EURUSD_chart.png'),
+        caption=generate_message(ind, 'EUR/USD'),
+        parse_mode='Markdown'
+    )
+
 
 async def send_status(bot, chat_id):
     with subscribers_lock:
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
+
 
 async def send_stats(bot, chat_id):
     summary = stats_manager.get_summary()
@@ -958,6 +1073,7 @@ async def send_stats(bot, chat_id):
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
+
 # ========== ФОНОВЫЙ ПОТОК (автоматическая рассылка по всем парам) ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
@@ -969,7 +1085,8 @@ async def auto_worker():
             file_subs = load_subscribers()
             with subscribers_lock:
                 if file_subs != subscribers:
-                    logger.warning(f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
+                    logger.warning(
+                        f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
                     subscribers.clear()
                     subscribers.update(file_subs)
                 subs = list(subscribers)
@@ -997,7 +1114,7 @@ async def auto_worker():
                         try:
                             bot = Bot(token=BOT_TOKEN)
                             ind = await get_indicators(symbol)
-                            if ind and ind.get('confidence', 0) >= 65:
+                            if ind and ind.get('confidence', 0) >= 13:
                                 up = ind['prob_up']
                                 down = ind['prob_down']
                                 direction = 'buy' if up > down else 'sell'
@@ -1025,11 +1142,23 @@ async def auto_worker():
                                 }
                                 stats_manager.add_signal(signal_record)
 
-                                await bot.send_message(uid, generate_message(ind, symbol), parse_mode='Markdown')
-                                logger.info(f"✅ {symbol} сигнал отправлен {uid}")
+                                # Генерация графика
+                                levels = {
+                                    'support': ind.get('support_levels', []),
+                                    'resistance': ind.get('resistance_levels', [])
+                                }
+                                chart_buf = generate_candlestick_chart(symbol, price_storages[symbol], levels)
+
+                                await bot.send_photo(
+                                    chat_id=uid,
+                                    photo=InputFile(chart_buf, filename=f'{symbol.replace("/", "")}_chart.png'),
+                                    caption=generate_message(ind, symbol),
+                                    parse_mode='Markdown'
+                                )
+                                logger.info(f"✅ {symbol} сигнал с графиком отправлен {uid}")
                             else:
                                 conf = ind.get('confidence', 0) if ind else 0
-                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 65)")
+                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 13)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
                 except Exception as e:
@@ -1039,10 +1168,12 @@ async def auto_worker():
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
 
+
 def start_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
+
 
 threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")

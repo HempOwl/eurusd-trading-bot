@@ -7,3 +7,6 @@ scikit-learn
 joblib
 numpy
 python-dotenv
+mplfinance
+scipy
+pandas
