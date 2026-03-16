@@ -803,14 +803,13 @@ async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
     try:
-        # Обязательно отвечаем на callback, чтобы Telegram не повторял запрос
         await bot.answer_callback_query(cb_id)
 
         if cb == 'signal':
             await send_signal(bot, chat_id)
         elif cb == 'status':
             await send_status(bot, chat_id)
-            elif cb == 'stats':
+        elif cb == 'stats':
             await send_stats(bot, chat_id)
         elif cb == 'auto_on':
             with subscribers_lock:
@@ -830,7 +829,6 @@ async def handle_callback(chat_id, cb, cb_id):
         elif cb == 'back':
             await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
         else:
-            # Неизвестный callback (например, старые кнопки)
             await bot.send_message(chat_id, "❓ Неизвестная команда или устаревшая кнопка")
             logger.warning(f"Unknown callback: {cb} from {chat_id}")
     except Exception as e:
