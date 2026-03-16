@@ -592,49 +592,6 @@ def generate_message(ind):
 🎯 Уверенность: {conf:.1f}%
 💡 Рекомендация: {rec}
 
-📈 *RSI*
-┌─ Значение: `{ind['rsi']:.1f}`
-└─ Сигнал: {ind['rsi_signal']}
-
-📊 *MACD*
-┌─ MACD: `{ind['macd']:.5f}`
-├─ Сигнал: `0.00000`
-├─ Гистограмма: `0.00000`
-└─ Тренд: {ind['macd_trend']}
-
-📉 *Полосы Боллинджера*
-┌─ Верхняя: `{ind['bb_upper']:.5f}`
-├─ Средняя: `{ind['bb_middle']:.5f}`
-├─ Нижняя: `{ind['bb_lower']:.5f}`
-├─ Ширина: `{ind['bb_width']:.2f}%`
-├─ Позиция: {ind['bb_position']}
-└─ Сигнал: {ind['bb_signal']}
-
-📏 *Скользящие средние (SMA)*\n"""
-        for p in [5, 10, 20, 50]:
-            if p in ind['sma']:
-                sig = ind.get(f'sma_{p}_signal', '')
-                msg += f"├─ SMA({p}): `{ind['sma'][p]:.5f}` {sig}\n"
-        msg += "\n📊 *Экспоненциальные средние (EMA)*\n"
-        for p in [5, 10, 20]:
-            if p in ind['ema']:
-                sig = ind.get(f'ema_{p}_signal', '')
-                msg += f"├─ EMA({p}): `{ind['ema'][p]:.5f}` {sig}\n"
-        sup_str = f"`{ind['nearest_support']:.5f}`" if ind['nearest_support'] else "`не определен`"
-        res_str = f"`{ind['nearest_resistance']:.5f}`" if ind['nearest_resistance'] else "`не определен`"
-        d_sup = f"{ind['distance_to_support']:.0f}" if ind['distance_to_support'] else "?"
-        d_res = f"{ind['distance_to_resistance']:.0f}" if ind['distance_to_resistance'] else "?"
-        msg += f"""
-📊 *Уровни поддержки/сопротивления*
-┌─ Ближайшая поддержка: {sup_str} (дист: {d_sup} пипсов)
-└─ Ближайшее сопротивление: {res_str} (дист: {d_res} пипсов)
-"""
-        if ind['support_levels']:
-            msg += f"├─ Уровни поддержки: {', '.join([f'{x:.5f}' for x in ind['support_levels']])}\n"
-        if ind['resistance_levels']:
-            msg += f"└─ Уровни сопротивления: {', '.join([f'{x:.5f}' for x in ind['resistance_levels']])}\n"
-
-        # Новые индикаторы
         if 'atr_percent' in ind:
             msg += f"\n📊 *ATR*: {ind['atr_percent']:.3f}%"
         if 'breakout' in ind and ind['breakout'] != 'no_breakout':
@@ -950,7 +907,7 @@ async def handle_callback(chat_id, cb, cb_id):
                 subscribers.add(chat_id)
                 save_subscribers(subscribers)
                 logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
-            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
+            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 3 мин)")
         elif cb == 'auto_off':
             with subscribers_lock:
                 if chat_id in subscribers:
@@ -1064,7 +1021,7 @@ async def send_stats(bot, chat_id):
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
-    logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
+    logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
     while True:
         try:
             await asyncio.sleep(180)  # 3 минуты
