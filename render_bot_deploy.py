@@ -1002,7 +1002,7 @@ async def send_stats(bot, chat_id):
         await bot.send_message(chat_id, "📊 Статистика пока пуста.")
         return
 
-    text = f"""📊 *Статистика сигналов*
+text = f"""[Стат] *Статистика сигналов*
 
 Всего сигналов: {summary['total']}
 ✅ Прибыльных: {summary['profit']}
