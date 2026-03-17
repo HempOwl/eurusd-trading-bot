@@ -47,7 +47,6 @@ STATS_FILE = "stats.json"
 
 # ========== АСИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛАМИ ==========
 async def async_load_subscribers() -> Set[int]:
-    """Асинхронная загрузка подписчиков из JSON."""
     try:
         async with aiofiles.open(SUBSCRIBERS_FILE, 'r') as f:
             data = await f.read()
@@ -62,7 +61,6 @@ async def async_load_subscribers() -> Set[int]:
         return set()
 
 async def async_save_subscribers(subs: Set[int]):
-    """Асинхронное сохранение подписчиков в JSON."""
     try:
         async with aiofiles.open(SUBSCRIBERS_FILE, 'w') as f:
             await f.write(json.dumps(list(subs), indent=2))
@@ -71,7 +69,6 @@ async def async_save_subscribers(subs: Set[int]):
         logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
 
 async def async_load_stats() -> List[Dict]:
-    """Асинхронная загрузка статистики."""
     try:
         async with aiofiles.open(STATS_FILE, 'r') as f:
             data = await f.read()
@@ -85,7 +82,6 @@ async def async_load_stats() -> List[Dict]:
         return []
 
 async def async_save_stats(signals: List[Dict]):
-    """Асинхронное сохранение статистики."""
     try:
         async with aiofiles.open(STATS_FILE, 'w') as f:
             await f.write(json.dumps(signals, indent=2))
@@ -93,7 +89,7 @@ async def async_save_stats(signals: List[Dict]):
     except Exception as e:
         logger.error(f"Ошибка сохранения статистики: {e}")
 
-# ========== КЛАСС ДЛЯ УПРАВЛЕНИЯ СТАТИСТИКОЙ (АСИНХРОННЫЙ) ==========
+# ========== КЛАСС ДЛЯ УПРАВЛЕНИЯ СТАТИСТИКОЙ ==========
 class StatsManager:
     def __init__(self):
         self.signals = []
@@ -374,7 +370,7 @@ class MLSignalGenerator:
 
 ml_gen = MLSignalGenerator()
 
-# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ С КЭШИРОВАНИЕМ ==========
+# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ ==========
 class PriceStorage:
     def __init__(self, maxlen=200):
         self.maxlen = maxlen
@@ -384,12 +380,10 @@ class PriceStorage:
         self.closes = []
         self.volumes = []
         self.last_signal = None
-        # Кэш индикаторов
         self.cached_indicators = None
         self.cache_time = 0
-        self.cache_ttl = 60  # секунд
+        self.cache_ttl = 60
 
-        # Для 5-минутных свечей
         self.m5_opens = []
         self.m5_highs = []
         self.m5_lows = []
@@ -401,7 +395,6 @@ class PriceStorage:
         return self.cached_indicators is not None and (time.time() - self.cache_time) < self.cache_ttl
 
     def add_candle(self, candle):
-        # Добавляем 1-минутную свечу
         self.opens.append(float(candle['open']))
         self.highs.append(float(candle['high']))
         self.lows.append(float(candle['low']))
@@ -414,10 +407,8 @@ class PriceStorage:
             self.closes.pop(0)
             self.volumes.pop(0)
 
-        # При добавлении свечи инвалидируем кэш
         self.cached_indicators = None
 
-        # Агрегация для 5-минутных свечей (остаётся без изменений)
         dt = datetime.strptime(candle['datetime'], '%Y-%m-%d %H:%M:%S')
         minute = (dt.minute // 5) * 5
         m5_key = dt.replace(minute=minute, second=0, microsecond=0)
@@ -470,7 +461,7 @@ class PriceStorage:
 
 price_storages = {sym: PriceStorage() for sym in SYMBOLS}
 
-# ========== ФУНКЦИИ ИНДИКАТОРОВ (без изменений) ==========
+# ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
 def sma(data, period):
     if len(data) < period:
         return data[-1]
@@ -738,7 +729,7 @@ def calculate_normalized_score(ind):
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
-# ========== ЗАГРУЗКА ДАННЫХ (асинхронная, без изменений) ==========
+# ========== ЗАГРУЗКА ДАННЫХ ==========
 async def fetch_candles(symbol, api_key, bars=50):
     url = "https://api.twelvedata.com/time_series"
     params = {
@@ -792,7 +783,6 @@ async def get_indicators(symbol):
         logger.error(f"Нет хранилища для {symbol}")
         return None
 
-    # Если кэш валиден, возвращаем его
     if storage.is_cache_valid():
         return storage.cached_indicators
 
@@ -926,11 +916,9 @@ async def get_indicators(symbol):
 
         ind['ml_prob_up'] = ml_gen.predict(ind)
 
-        # Получаем тренд на 5 минутах
         trend_5min = get_5min_trend(storage)
         ind['trend_5min'] = trend_5min
 
-        # Коррекция уверенности по тренду
         up = ind['prob_up']
         down = ind['prob_down']
         if (up > down and trend_5min == 'down') or (down > up and trend_5min == 'up'):
@@ -941,7 +929,6 @@ async def get_indicators(symbol):
         ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
         storage.last_signal = ind
 
-        # Сохраняем в кэш
         storage.cached_indicators = ind
         storage.cache_time = time.time()
         return ind
@@ -1011,11 +998,10 @@ def generate_message(ind, symbol, warning=None):
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
     kb = [
-        [InlineKeyboardButton("📊 Получить сигнал", callback_data='signal'),
-         InlineKeyboardButton("📈 Статус", callback_data='status')],
-        [InlineKeyboardButton("📊 Статистика", callback_data='stats'),
-         InlineKeyboardButton("🔔 Автосигнал (3 мин)", callback_data='auto_on')],
-        [InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
+        [InlineKeyboardButton("📈 Статус", callback_data='status'),
+         InlineKeyboardButton("📊 Статистика", callback_data='stats')],
+        [InlineKeyboardButton("🔔 Автосигнал (3 мин)", callback_data='auto_on'),
+         InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -1033,7 +1019,6 @@ def index():
 
 @app.route('/health')
 def health():
-    # Используем subscribers из памяти (синхронный доступ)
     return jsonify({'status': 'ok', 'subscribers': len(subscribers)})
 
 @app.route('/webhook', methods=['POST'])
@@ -1067,7 +1052,6 @@ def webhook():
                 pass
         return jsonify({'ok': False}), 500
 
-# Глобальные переменные для subscribers (в памяти)
 subscribers = set()
 subscribers_lock = asyncio.Lock()
 
@@ -1076,9 +1060,7 @@ async def handle_callback(chat_id, cb, cb_id):
     bot = Bot(token=BOT_TOKEN)
     try:
         await bot.answer_callback_query(cb_id)
-        if cb == 'signal':
-            await send_signal(bot, chat_id)
-        elif cb == 'status':
+        if cb == 'status':
             await send_status(bot, chat_id)
         elif cb == 'stats':
             await send_stats(bot, chat_id)
@@ -1114,8 +1096,6 @@ async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
         await bot.send_message(chat_id, "🤖Currency pair", reply_markup=main_menu())
-    elif text == '/signal':
-        await send_signal(bot, chat_id)
     elif text == '/status':
         await send_status(bot, chat_id)
     elif text == '/stats':
@@ -1130,47 +1110,6 @@ async def handle_message(chat_id, text):
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
-
-async def send_signal(bot, chat_id):
-    await bot.send_message(chat_id, "🔄 Анализирую EUR/USD...")
-    ind = await get_indicators('EUR/USD')
-    if not ind:
-        await bot.send_message(chat_id, "❌ Ошибка получения данных для EUR/USD")
-        return
-    if ind['confidence'] < 65:
-        await bot.send_message(chat_id,
-                               f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
-        return
-
-    up = ind['prob_up']
-    down = ind['prob_down']
-    direction = 'buy' if up > down else 'sell'
-    entry = ind['price']
-    atr = ind.get('atr', 0.001)
-    tp_distance = atr * 1.5
-    sl_distance = atr * 0.75
-    if direction == 'buy':
-        tp = entry + tp_distance
-        sl = entry - sl_distance
-    else:
-        tp = entry - tp_distance
-        sl = entry + sl_distance
-
-    signal_record = {
-        'timestamp': time.time(),
-        'symbol': 'EUR/USD',
-        'price': entry,
-        'direction': direction,
-        'tp': tp,
-        'sl': sl,
-        'result': None,
-        'exit_price': None,
-        'exit_time': None
-    }
-    await stats_manager.add_signal(signal_record)
-
-    msg = generate_message(ind, 'EUR/USD')
-    await bot.send_message(chat_id, msg, parse_mode='Markdown')
 
 async def send_status(bot, chat_id):
     async with subscribers_lock:
@@ -1213,7 +1152,6 @@ async def auto_worker():
         try:
             await asyncio.sleep(180)
 
-            # Асинхронная загрузка подписчиков
             file_subs = await async_load_subscribers()
             async with subscribers_lock:
                 if file_subs != subscribers:
@@ -1242,7 +1180,6 @@ async def auto_worker():
                             bot = Bot(token=BOT_TOKEN)
                             ind = await get_indicators(symbol)
                             if ind and ind.get('confidence', 0) >= 65:
-                                # Проверяем фундаментальные новости
                                 has_risk, events = await economic_calendar.check_symbol_risk(symbol)
                                 warning = None
                                 if has_risk:
@@ -1313,14 +1250,12 @@ def start_worker():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
 
-# Инициализация при старте
 async def init():
     await stats_manager.load()
     global subscribers
     subscribers = await async_load_subscribers()
     logger.info(f"👥 Загружено {len(subscribers)} подписчиков из файла")
 
-# Запускаем инициализацию
 asyncio.run(init())
 
 threading.Thread(target=start_worker, daemon=True).start()
