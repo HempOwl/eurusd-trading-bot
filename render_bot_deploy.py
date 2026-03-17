@@ -1,16 +1,16 @@
 import asyncio
 import logging
 import os
-import threading
 import json
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import aiohttp
+import aiofiles
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import time
-import requests
 import pytz
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
+import threading
 
 # Для машинного обучения (пока заготовка)
 from sklearn.ensemble import RandomForestClassifier
@@ -43,124 +43,118 @@ SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
 
 # ========== ФАЙЛЫ ПОДПИСЧИКОВ ==========
 SUBSCRIBERS_FILE = "subscribers.json"
-full_path = os.path.abspath(SUBSCRIBERS_FILE)
-logger.info(f"📁 Путь к файлу подписчиков: {full_path}")
+STATS_FILE = "stats.json"
 
-
-def load_subscribers():
-    if os.path.exists(SUBSCRIBERS_FILE):
-        try:
-            with open(SUBSCRIBERS_FILE, 'r') as f:
-                data = json.load(f)
-                subs = set(data)
-                logger.info(f"📂 Загружено подписчиков: {len(subs)}")
-                return subs
-        except Exception as e:
-            logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
-    else:
-        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует")
-    return set()
-
-
-def save_subscribers(subs):
+# ========== АСИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛАМИ ==========
+async def async_load_subscribers() -> Set[int]:
+    """Асинхронная загрузка подписчиков из JSON."""
     try:
-        with open(SUBSCRIBERS_FILE, 'w') as f:
-            json.dump(list(subs), f)
+        async with aiofiles.open(SUBSCRIBERS_FILE, 'r') as f:
+            data = await f.read()
+            subs = set(json.loads(data))
+            logger.info(f"📂 Загружено подписчиков: {len(subs)}")
+            return subs
+    except FileNotFoundError:
+        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует")
+        return set()
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
+        return set()
+
+async def async_save_subscribers(subs: Set[int]):
+    """Асинхронное сохранение подписчиков в JSON."""
+    try:
+        async with aiofiles.open(SUBSCRIBERS_FILE, 'w') as f:
+            await f.write(json.dumps(list(subs), indent=2))
         logger.info(f"💾 Сохранено подписчиков: {len(subs)}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
 
+async def async_load_stats() -> List[Dict]:
+    """Асинхронная загрузка статистики."""
+    try:
+        async with aiofiles.open(STATS_FILE, 'r') as f:
+            data = await f.read()
+            signals = json.loads(data)
+            logger.info(f"📊 Загружено записей статистики: {len(signals)}")
+            return signals
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка загрузки статистики: {e}")
+        return []
 
-subscribers = load_subscribers()
-subscribers_lock = threading.Lock()
+async def async_save_stats(signals: List[Dict]):
+    """Асинхронное сохранение статистики."""
+    try:
+        async with aiofiles.open(STATS_FILE, 'w') as f:
+            await f.write(json.dumps(signals, indent=2))
+        logger.info(f"💾 Статистика сохранена: {len(signals)} записей")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения статистики: {e}")
 
-
-# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА ==========
-async def notify_admin(bot: Bot, message: str):
-    """Отправляет сообщение администратору, если задан ADMIN_CHAT_ID"""
-    if ADMIN_CHAT_ID:
-        try:
-            await bot.send_message(ADMIN_CHAT_ID, f"⚠️ *Админ-уведомление*\n{message}", parse_mode='Markdown')
-            logger.info("📨 Уведомление администратору отправлено")
-        except Exception as e:
-            logger.error(f"❌ Не удалось отправить уведомление админу: {e}")
-
-
-# ======================================================================
-# Класс для управления статистикой сигналов (JSON)
-# ======================================================================
+# ========== КЛАСС ДЛЯ УПРАВЛЕНИЯ СТАТИСТИКОЙ (АСИНХРОННЫЙ) ==========
 class StatsManager:
-    def __init__(self, stats_file='stats.json'):
-        self.stats_file = stats_file
+    def __init__(self):
         self.signals = []
-        self.load_stats()
+        self.lock = asyncio.Lock()
 
-    def load_stats(self):
-        if os.path.exists(self.stats_file):
-            try:
-                with open(self.stats_file, 'r') as f:
-                    self.signals = json.load(f)
-                logger.info(f"📊 Загружено записей статистики: {len(self.signals)}")
-            except Exception as e:
-                logger.error(f"Ошибка загрузки статистики: {e}")
-                self.signals = []
-        else:
-            self.signals = []
+    async def load(self):
+        async with self.lock:
+            self.signals = await async_load_stats()
 
-    def save_stats(self):
-        try:
-            with open(self.stats_file, 'w') as f:
-                json.dump(self.signals, f, indent=2)
-            logger.info(f"💾 Статистика сохранена: {len(self.signals)} записей")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения статистики: {e}")
+    async def save(self):
+        async with self.lock:
+            await async_save_stats(self.signals)
 
-    def add_signal(self, signal):
-        self.signals.append(signal)
-        self.save_stats()
+    async def add_signal(self, signal: Dict):
+        async with self.lock:
+            self.signals.append(signal)
+            await async_save_stats(self.signals)
 
-    def update_results(self, symbol, current_price):
+    async def update_results(self, symbol: str, current_price: float):
         updated = False
-        for sig in self.signals:
-            if sig.get('result') is not None or sig.get('symbol') != symbol:
-                continue
-            if time.time() - sig['timestamp'] > 3600:
-                sig['result'] = 'timeout'
-                sig['exit_price'] = current_price
-                sig['exit_time'] = time.time()
-                updated = True
-                continue
+        async with self.lock:
+            for sig in self.signals:
+                if sig.get('result') is not None or sig.get('symbol') != symbol:
+                    continue
+                if time.time() - sig['timestamp'] > 3600:
+                    sig['result'] = 'timeout'
+                    sig['exit_price'] = current_price
+                    sig['exit_time'] = time.time()
+                    updated = True
+                    continue
 
-            direction = sig['direction']
-            entry = sig['price']
-            tp = sig.get('tp')
-            sl = sig.get('sl')
+                direction = sig['direction']
+                entry = sig['price']
+                tp = sig.get('tp')
+                sl = sig.get('sl')
 
-            if direction == 'buy':
-                if tp and current_price >= tp:
-                    sig['result'] = 'profit'
-                    sig['exit_price'] = tp
-                    sig['exit_time'] = time.time()
-                    updated = True
-                elif sl and current_price <= sl:
-                    sig['result'] = 'loss'
-                    sig['exit_price'] = sl
-                    sig['exit_time'] = time.time()
-                    updated = True
-            elif direction == 'sell':
-                if tp and current_price <= tp:
-                    sig['result'] = 'profit'
-                    sig['exit_price'] = tp
-                    sig['exit_time'] = time.time()
-                    updated = True
-                elif sl and current_price >= sl:
-                    sig['result'] = 'loss'
-                    sig['exit_price'] = sl
-                    sig['exit_time'] = time.time()
-                    updated = True
+                if direction == 'buy':
+                    if tp and current_price >= tp:
+                        sig['result'] = 'profit'
+                        sig['exit_price'] = tp
+                        sig['exit_time'] = time.time()
+                        updated = True
+                    elif sl and current_price <= sl:
+                        sig['result'] = 'loss'
+                        sig['exit_price'] = sl
+                        sig['exit_time'] = time.time()
+                        updated = True
+                elif direction == 'sell':
+                    if tp and current_price <= tp:
+                        sig['result'] = 'profit'
+                        sig['exit_price'] = tp
+                        sig['exit_time'] = time.time()
+                        updated = True
+                    elif sl and current_price >= sl:
+                        sig['result'] = 'loss'
+                        sig['exit_price'] = sl
+                        sig['exit_time'] = time.time()
+                        updated = True
 
-        if updated:
-            self.save_stats()
+            if updated:
+                await async_save_stats(self.signals)
 
     def get_summary(self):
         total = len(self.signals)
@@ -208,13 +202,18 @@ class StatsManager:
             'total_loss_pips': total_loss_pips
         }
 
-
 stats_manager = StatsManager()
 
+# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА ==========
+async def notify_admin(bot: Bot, message: str):
+    if ADMIN_CHAT_ID:
+        try:
+            await bot.send_message(ADMIN_CHAT_ID, f"⚠️ *Админ-уведомление*\n{message}", parse_mode='Markdown')
+            logger.info("📨 Уведомление администратору отправлено")
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить уведомление админу: {e}")
 
-# ======================================================================
-# Класс для работы с экономическим календарём (Finnworlds, без ключа)
-# ======================================================================
+# ========== АСИНХРОННЫЙ ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ ==========
 class EconomicCalendar:
     def __init__(self, cache_minutes: int = 60):
         self.cache_minutes = cache_minutes
@@ -233,24 +232,31 @@ class EconomicCalendar:
         }
         self.important_levels = ['High', 'Medium']
 
-    def _fetch_events(self, date_from: str, date_to: str) -> List[Dict]:
+    async def _fetch_events(self, date_from: str, date_to: str) -> List[Dict]:
         params = {"from": date_from, "to": date_to}
         try:
-            response = requests.get(self.base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            events = []
-            for item in data:
-                event = {
-                    'date': item.get('date'),
-                    'time': item.get('time'),
-                    'country': item.get('country_code'),
-                    'event': item.get('event_name'),
-                    'impact': item.get('impact'),
-                    'currency': item.get('currency')
-                }
-                events.append(event)
-            return events
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.base_url, params=params, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        events = []
+                        for item in data:
+                            event = {
+                                'date': item.get('date'),
+                                'time': item.get('time'),
+                                'country': item.get('country_code'),
+                                'event': item.get('event_name'),
+                                'impact': item.get('impact'),
+                                'currency': item.get('currency')
+                            }
+                            events.append(event)
+                        return events
+                    else:
+                        logger.error(f"Ошибка календаря: статус {resp.status}")
+                        return []
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при запросе к календарю")
+            return []
         except Exception as e:
             logger.error(f"Ошибка получения календаря: {e}")
             return []
@@ -260,12 +266,12 @@ class EconomicCalendar:
             return True
         return (datetime.now() - self.last_update) > timedelta(minutes=self.cache_minutes)
 
-    def update_cache(self):
+    async def update_cache(self):
         if not self._should_update():
             return
         today = datetime.now().strftime('%Y-%m-%d')
         tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        events = self._fetch_events(today, tomorrow)
+        events = await self._fetch_events(today, tomorrow)
         self.cache.clear()
         for event in events:
             if not event.get('date') or not event.get('time'):
@@ -281,8 +287,8 @@ class EconomicCalendar:
         self.last_update = datetime.now()
         logger.info(f"✅ Календарь Finnworlds обновлён: {len(self.cache)} событий")
 
-    def get_upcoming_events(self, minutes_ahead: int = 30) -> List[Dict]:
-        self.update_cache()
+    async def get_upcoming_events(self, minutes_ahead: int = 30) -> List[Dict]:
+        await self.update_cache()
         now = datetime.now(pytz.UTC)
         time_limit = now + timedelta(minutes=minutes_ahead)
         upcoming = []
@@ -296,20 +302,18 @@ class EconomicCalendar:
                 continue
         return upcoming
 
-    def check_symbol_risk(self, symbol: str, minutes_window: int = 5) -> tuple:
+    async def check_symbol_risk(self, symbol: str, minutes_window: int = 5) -> tuple:
         countries = self.symbol_to_country.get(symbol, [])
         if not countries:
             return False, []
-        upcoming = self.get_upcoming_events(minutes_ahead=minutes_window * 2)
+        upcoming = await self.get_upcoming_events(minutes_ahead=minutes_window * 2)
         risk_events = []
         for event in upcoming:
             if event['country'] in countries and event.get('impact') in self.important_levels:
                 risk_events.append(event)
         return len(risk_events) > 0, risk_events
 
-
 economic_calendar = EconomicCalendar()
-
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
@@ -368,11 +372,9 @@ class MLSignalGenerator:
             logger.warning(f"ML prediction error: {e}")
             return 0.5
 
-
 ml_gen = MLSignalGenerator()
 
-
-# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ ==========
+# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ С КЭШИРОВАНИЕМ ==========
 class PriceStorage:
     def __init__(self, maxlen=200):
         self.maxlen = maxlen
@@ -382,6 +384,10 @@ class PriceStorage:
         self.closes = []
         self.volumes = []
         self.last_signal = None
+        # Кэш индикаторов
+        self.cached_indicators = None
+        self.cache_time = 0
+        self.cache_ttl = 60  # секунд
 
         # Для 5-минутных свечей
         self.m5_opens = []
@@ -390,6 +396,9 @@ class PriceStorage:
         self.m5_closes = []
         self.m5_timestamps = []
         self._current_m5 = None
+
+    def is_cache_valid(self):
+        return self.cached_indicators is not None and (time.time() - self.cache_time) < self.cache_ttl
 
     def add_candle(self, candle):
         # Добавляем 1-минутную свечу
@@ -405,7 +414,10 @@ class PriceStorage:
             self.closes.pop(0)
             self.volumes.pop(0)
 
-        # Агрегация для 5-минутных свечей
+        # При добавлении свечи инвалидируем кэш
+        self.cached_indicators = None
+
+        # Агрегация для 5-минутных свечей (остаётся без изменений)
         dt = datetime.strptime(candle['datetime'], '%Y-%m-%d %H:%M:%S')
         minute = (dt.minute // 5) * 5
         m5_key = dt.replace(minute=minute, second=0, microsecond=0)
@@ -419,7 +431,6 @@ class PriceStorage:
                 'time': m5_key
             }
         elif m5_key != self._current_m5['time']:
-            # Закрываем предыдущую свечу
             self.m5_opens.append(self._current_m5['open'])
             self.m5_highs.append(self._current_m5['high'])
             self.m5_lows.append(self._current_m5['low'])
@@ -431,7 +442,6 @@ class PriceStorage:
                 self.m5_lows.pop(0)
                 self.m5_closes.pop(0)
                 self.m5_timestamps.pop(0)
-            # Новая свеча
             self._current_m5 = {
                 'open': float(candle['open']),
                 'high': float(candle['high']),
@@ -440,7 +450,6 @@ class PriceStorage:
                 'time': m5_key
             }
         else:
-            # Обновляем текущую 5-минутную свечу
             self._current_m5['high'] = max(self._current_m5['high'], float(candle['high']))
             self._current_m5['low'] = min(self._current_m5['low'], float(candle['low']))
             self._current_m5['close'] = float(candle['close'])
@@ -457,17 +466,15 @@ class PriceStorage:
         self.m5_closes.clear()
         self.m5_timestamps.clear()
         self._current_m5 = None
-
+        self.cached_indicators = None
 
 price_storages = {sym: PriceStorage() for sym in SYMBOLS}
 
-
-# ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
+# ========== ФУНКЦИИ ИНДИКАТОРОВ (без изменений) ==========
 def sma(data, period):
     if len(data) < period:
         return data[-1]
     return sum(data[-period:]) / period
-
 
 def ema(data, period):
     if len(data) < period:
@@ -477,7 +484,6 @@ def ema(data, period):
     for price in data[-period + 1:]:
         ema_val = (price - ema_val) * multiplier + ema_val
     return ema_val
-
 
 def rsi(data, period=14):
     if len(data) < period + 1:
@@ -498,7 +504,6 @@ def rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-
 def bbands(data, period=20, std=2):
     if len(data) < period:
         m = data[-1]
@@ -508,12 +513,10 @@ def bbands(data, period=20, std=2):
     s = variance ** 0.5
     return m + std * s, m, m - std * s
 
-
 def macd(data, fast=12, slow=26):
     if len(data) < slow:
         return 0.0
     return ema(data, fast) - ema(data, slow)
-
 
 def calculate_atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
@@ -528,7 +531,6 @@ def calculate_atr(highs, lows, closes, period=14):
     atr_percentage = (atr / closes[-1]) * 100
     return atr, atr_percentage
 
-
 def calculate_obv(closes, volumes):
     if len(closes) < 2 or len(volumes) < 2:
         return [0]
@@ -542,13 +544,11 @@ def calculate_obv(closes, volumes):
             obv.append(obv[-1])
     return obv
 
-
 def obv_trend(obv_values, period=14):
     if len(obv_values) < period:
         return "neutral"
     obv_ema = ema(obv_values, period)
     return "bullish" if obv_values[-1] > obv_ema else "bearish"
-
 
 def detect_false_breakout(highs, lows, closes, lookback=5):
     if len(closes) < lookback + 2:
@@ -567,7 +567,6 @@ def detect_false_breakout(highs, lows, closes, lookback=5):
         else:
             return "valid_breakout_down"
     return "no_breakout"
-
 
 def find_support_resistance(high, low, close, window=5):
     supports, resistances = [], []
@@ -609,7 +608,6 @@ def find_support_resistance(high, low, close, window=5):
             break
     return supports[-3:], resistances[-3:], ns, nr
 
-
 def adx(highs, lows, closes, period=14):
     if len(closes) < period + 1:
         return 0, 0, 0
@@ -632,7 +630,6 @@ def adx(highs, lows, closes, period=14):
     adx_val = sum([dx] * period) / period
     return adx_val, plus_di, minus_di
 
-
 def stochastic(highs, lows, closes, k_period=14, d_period=3):
     if len(closes) < k_period + d_period:
         return 50, 50
@@ -641,7 +638,6 @@ def stochastic(highs, lows, closes, k_period=14, d_period=3):
     k = 100 * (closes[-1] - lowest_low) / (highest_high - lowest_low) if (highest_high - lowest_low) != 0 else 50
     d = sum([k] * d_period) / d_period
     return k, d
-
 
 def pivot_points(high, low, close):
     pivot = (high + low + close) / 3
@@ -653,7 +649,6 @@ def pivot_points(high, low, close):
     s3 = low - 2 * (high - pivot)
     return pivot, r1, r2, r3, s1, s2, s3
 
-
 def get_5min_trend(storage):
     if len(storage.m5_closes) < 2:
         return 'neutral'
@@ -663,7 +658,6 @@ def get_5min_trend(storage):
         return 'down'
     else:
         return 'neutral'
-
 
 def calculate_normalized_score(ind):
     score = 0
@@ -744,8 +738,7 @@ def calculate_normalized_score(ind):
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
-
-# ========== ЗАГРУЗКА ДАННЫХ ==========
+# ========== ЗАГРУЗКА ДАННЫХ (асинхронная, без изменений) ==========
 async def fetch_candles(symbol, api_key, bars=50):
     url = "https://api.twelvedata.com/time_series"
     params = {
@@ -763,7 +756,6 @@ async def fetch_candles(symbol, api_key, bars=50):
     except Exception as e:
         logger.error(f"fetch error for {symbol}: {e}")
     return None
-
 
 async def fetch_last_candle(symbol, api_key):
     url = "https://api.twelvedata.com/time_series"
@@ -785,7 +777,6 @@ async def fetch_last_candle(symbol, api_key):
         logger.error(f"fetch_last_candle error for {symbol}: {e}")
     return None
 
-
 async def update_prices(symbol):
     candles = await fetch_candles(symbol, TWELVE_API_KEY, 200)
     if candles:
@@ -795,12 +786,16 @@ async def update_prices(symbol):
         return True
     return False
 
-
 async def get_indicators(symbol):
     storage = price_storages.get(symbol)
     if not storage:
         logger.error(f"Нет хранилища для {symbol}")
         return None
+
+    # Если кэш валиден, возвращаем его
+    if storage.is_cache_valid():
+        return storage.cached_indicators
+
     try:
         if len(storage.closes) < 20:
             if not await update_prices(symbol):
@@ -939,17 +934,20 @@ async def get_indicators(symbol):
         up = ind['prob_up']
         down = ind['prob_down']
         if (up > down and trend_5min == 'down') or (down > up and trend_5min == 'up'):
-            ind['confidence'] = ind['confidence'] * 0.7  # уменьшаем уверенность
+            ind['confidence'] = ind['confidence'] * 0.7
             logger.info(f"📉 {symbol}: сигнал ослаблен из-за противоречия тренду 5мин ({trend_5min})")
 
         ind['price'] = cur
         ind['timestamp'] = datetime.now().strftime('%H:%M:%S')
         storage.last_signal = ind
+
+        # Сохраняем в кэш
+        storage.cached_indicators = ind
+        storage.cache_time = time.time()
         return ind
     except Exception as e:
         logger.error(f"Error in get_indicators for {symbol}: {e}")
         return None
-
 
 # ========== ГЕНЕРАЦИЯ СООБЩЕНИЯ ==========
 def generate_message(ind, symbol, warning=None):
@@ -1010,7 +1008,6 @@ def generate_message(ind, symbol, warning=None):
         logger.error(f"Unexpected error in generate_message: {e}")
         return "❌ Внутренняя ошибка при формировании сигнала"
 
-
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
     kb = [
@@ -1022,7 +1019,6 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
@@ -1031,18 +1027,14 @@ def before_request():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-
 @app.route('/')
 def index():
     return "<h1>🤖Currency pair</h1><p>Running</p>"
 
-
 @app.route('/health')
 def health():
-    with subscribers_lock:
-        count = len(subscribers)
-    return jsonify({'status': 'ok', 'subscribers': count})
-
+    # Используем subscribers из памяти (синхронный доступ)
+    return jsonify({'status': 'ok', 'subscribers': len(subscribers)})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1064,18 +1056,20 @@ def webhook():
         return jsonify({'ok': True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
-        # Уведомляем админа о критической ошибке
         if ADMIN_CHAT_ID:
             try:
                 bot = Bot(token=BOT_TOKEN)
                 asyncio.run_coroutine_threadsafe(
                     notify_admin(bot, f"❌ Критическая ошибка в webhook: {e}"),
-                    loop
+                    asyncio.get_event_loop()
                 )
             except:
                 pass
         return jsonify({'ok': False}), 500
 
+# Глобальные переменные для subscribers (в памяти)
+subscribers = set()
+subscribers_lock = asyncio.Lock()
 
 async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
@@ -1089,16 +1083,16 @@ async def handle_callback(chat_id, cb, cb_id):
         elif cb == 'stats':
             await send_stats(bot, chat_id)
         elif cb == 'auto_on':
-            with subscribers_lock:
+            async with subscribers_lock:
                 subscribers.add(chat_id)
-                save_subscribers(subscribers)
-                logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
+                await async_save_subscribers(subscribers)
             await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 3 мин)")
+            logger.info(f"✅ Подписчик {chat_id} добавлен")
         elif cb == 'auto_off':
-            with subscribers_lock:
+            async with subscribers_lock:
                 if chat_id in subscribers:
                     subscribers.remove(chat_id)
-                    save_subscribers(subscribers)
+                    await async_save_subscribers(subscribers)
                     await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
                     logger.info(f"⏹️ Подписчик {chat_id} удалён")
                 else:
@@ -1112,11 +1106,9 @@ async def handle_callback(chat_id, cb, cb_id):
         logger.error(f"Error in handle_callback: {e}")
         try:
             await bot.send_message(chat_id, "⚠️ Внутренняя ошибка при обработке запроса")
-            # Уведомляем админа
             await notify_admin(bot, f"❌ Ошибка в handle_callback для {chat_id}: {e}")
         except:
             pass
-
 
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
@@ -1129,16 +1121,15 @@ async def handle_message(chat_id, text):
     elif text == '/stats':
         await send_stats(bot, chat_id)
     elif text == '/stop':
-        with subscribers_lock:
+        async with subscribers_lock:
             if chat_id in subscribers:
                 subscribers.remove(chat_id)
-                save_subscribers(subscribers)
+                await async_save_subscribers(subscribers)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
             else:
                 await bot.send_message(chat_id, "❌ Автосигналы не были включены")
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
-
 
 async def send_signal(bot, chat_id):
     await bot.send_message(chat_id, "🔄 Анализирую EUR/USD...")
@@ -1176,17 +1167,15 @@ async def send_signal(bot, chat_id):
         'exit_price': None,
         'exit_time': None
     }
-    stats_manager.add_signal(signal_record)
+    await stats_manager.add_signal(signal_record)
 
     msg = generate_message(ind, 'EUR/USD')
     await bot.send_message(chat_id, msg, parse_mode='Markdown')
 
-
 async def send_status(bot, chat_id):
-    with subscribers_lock:
+    async with subscribers_lock:
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
-
 
 async def send_stats(bot, chat_id):
     summary = stats_manager.get_summary()
@@ -1210,11 +1199,9 @@ async def send_stats(bot, chat_id):
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
-
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
-    # Уведомляем админа о запуске
     if ADMIN_CHAT_ID:
         try:
             bot = Bot(token=BOT_TOKEN)
@@ -1226,11 +1213,11 @@ async def auto_worker():
         try:
             await asyncio.sleep(180)
 
-            file_subs = load_subscribers()
-            with subscribers_lock:
+            # Асинхронная загрузка подписчиков
+            file_subs = await async_load_subscribers()
+            async with subscribers_lock:
                 if file_subs != subscribers:
-                    logger.warning(
-                        f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
+                    logger.warning(f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
                     subscribers.clear()
                     subscribers.update(file_subs)
                 subs = list(subscribers)
@@ -1246,7 +1233,7 @@ async def auto_worker():
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
                         logger.info(f"✅ {symbol}: новая свеча {new_candle.get('datetime')} = {current_price}")
-                        stats_manager.update_results(symbol, current_price)
+                        await stats_manager.update_results(symbol, current_price)
                     else:
                         logger.warning(f"⚠️ {symbol}: не удалось получить свечу")
 
@@ -1256,7 +1243,7 @@ async def auto_worker():
                             ind = await get_indicators(symbol)
                             if ind and ind.get('confidence', 0) >= 65:
                                 # Проверяем фундаментальные новости
-                                has_risk, events = economic_calendar.check_symbol_risk(symbol)
+                                has_risk, events = await economic_calendar.check_symbol_risk(symbol)
                                 warning = None
                                 if has_risk:
                                     event_names = [e['event'] for e in events[:1]]
@@ -1289,7 +1276,7 @@ async def auto_worker():
                                     'exit_price': None,
                                     'exit_time': None
                                 }
-                                stats_manager.add_signal(signal_record)
+                                await stats_manager.add_signal(signal_record)
 
                                 await bot.send_message(uid, generate_message(ind, symbol, warning),
                                                        parse_mode='Markdown')
@@ -1299,7 +1286,6 @@ async def auto_worker():
                                 logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 65)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
-                            # Уведомляем админа
                             try:
                                 bot = Bot(token=BOT_TOKEN)
                                 await notify_admin(bot, f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
@@ -1322,12 +1308,20 @@ async def auto_worker():
                 pass
             await asyncio.sleep(10)
 
-
 def start_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
 
+# Инициализация при старте
+async def init():
+    await stats_manager.load()
+    global subscribers
+    subscribers = await async_load_subscribers()
+    logger.info(f"👥 Загружено {len(subscribers)} подписчиков из файла")
+
+# Запускаем инициализацию
+asyncio.run(init())
 
 threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")
