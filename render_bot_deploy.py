@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY')
+TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
 ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID')
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
-if not POLYGON_API_KEY:
-    logger.error("❌ POLYGON_API_KEY не задан!")
+if not TWELVE_API_KEY:
+    logger.error("❌ TWELVE_API_KEY не задан!")
 if not ADMIN_CHAT_ID:
     logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
 
@@ -727,56 +727,64 @@ def calculate_normalized_score(ind):
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
-# ========== ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ POLYGON.IO ==========
+# ========== ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ TWELVE DATA ==========
 async def fetch_candles(symbol, api_key, bars=50):
-    # Преобразуем символ из формата EUR/USD в формат Polygon для Forex
-    base, quote = symbol.split('/')
-    # Для Forex используем префикс C: и убираем слэш
-    polygon_symbol = f"C:{base}{quote}"
-    url = f"https://api.polygon.io/v2/aggs/ticker/{polygon_symbol}/range/1/minute/{bars}"
+    url = "https://api.twelvedata.com/time_series"
     params = {
-        'adjusted': 'true',
-        'sort': 'desc',
-        'apiKey': api_key
+        'symbol': symbol,
+        'interval': '1min',
+        'outputsize': bars,
+        'apikey': api_key
     }
     try:
         async with aiohttp.ClientSession() as sess:
             async with sess.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    results = data.get('results', [])
-                    candles = []
-                    for item in reversed(results):
-                        candle = {
-                            'datetime': datetime.fromtimestamp(item['t']//1000).strftime('%Y-%m-%d %H:%M:%S'),
-                            'open': item['o'],
-                            'high': item['h'],
-                            'low': item['l'],
-                            'close': item['c'],
-                            'volume': item['v']
-                        }
-                        candles.append(candle)
-                    return candles
+                    values = data.get('values')
+                    if values is None:
+                        logger.error(f"Twelve Data error: {data}")
+                        return None
+                    return values
                 else:
                     error_text = await resp.text()
-                    logger.error(f"Polygon error for {symbol} ({polygon_symbol}): {resp.status} - {error_text}")
+                    logger.error(f"Twelve Data error for {symbol}: {resp.status} - {error_text}")
                     return None
     except Exception as e:
         logger.error(f"fetch error for {symbol}: {e}")
         return None
 
 async def fetch_last_candle(symbol, api_key):
-    # Берём последнюю свечу (достаточно bars=1)
-    candles = await fetch_candles(symbol, api_key, 1)
-    if candles:
-        return candles[0]
-    return None
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        'symbol': symbol,
+        'interval': '1min',
+        'outputsize': 1,
+        'apikey': api_key
+    }
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    values = data.get('values')
+                    if values and len(values) > 0:
+                        return values[0]
+                    else:
+                        return None
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"Twelve Data error for {symbol}: {resp.status} - {error_text}")
+                    return None
+    except Exception as e:
+        logger.error(f"fetch_last_candle error for {symbol}: {e}")
+        return None
 
 async def update_prices(symbol):
-    candles = await fetch_candles(symbol, POLYGON_API_KEY, 200)
+    candles = await fetch_candles(symbol, TWELVE_API_KEY, 200)
     if candles:
         price_storages[symbol].clear()
-        for c in candles:
+        for c in candles[::-1]:
             price_storages[symbol].add_candle(c)
         return True
     return False
@@ -1004,7 +1012,7 @@ def main_menu():
     kb = [
         [InlineKeyboardButton("📈 Статус", callback_data='status'),
          InlineKeyboardButton("📊 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("🔔 Автосигнал (3 мин)", callback_data='auto_on'),
+        [InlineKeyboardButton("🔔 Автосигнал", callback_data='auto_on'),
          InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
@@ -1148,13 +1156,13 @@ async def auto_worker():
     if ADMIN_CHAT_ID:
         try:
             bot = Bot(token=BOT_TOKEN)
-            await notify_admin(bot, "✅ Бот успешно запущен.")
+            await notify_admin(bot, "✅ Бот успешно запущен")
         except:
             pass
 
     while True:
         try:
-            await asyncio.sleep(300)  # 5 минут
+            await asyncio.sleep(600)  # 10 минут
 
             file_subs = await async_load_subscribers()
             async with subscribers_lock:
@@ -1170,7 +1178,7 @@ async def auto_worker():
 
             for symbol in SYMBOLS:
                 try:
-                    new_candle = await fetch_last_candle(symbol, POLYGON_API_KEY)
+                    new_candle = await fetch_last_candle(symbol, TWELVE_API_KEY)
                     if new_candle:
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
