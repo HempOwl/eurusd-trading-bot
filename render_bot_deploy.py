@@ -10,8 +10,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import time
 import requests
 import pytz
-import asyncpg
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional
 
 # Для машинного обучения (пока заготовка)
 from sklearn.ensemble import RandomForestClassifier
@@ -30,269 +29,168 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
-DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
-if not DATABASE_URL:
-    logger.error("❌ DATABASE_URL не задан!")
 
 # ========== СПИСОК ВАЛЮТНЫХ ПАР ==========
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
 
-# ========== ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ==========
-class Database:
-    def __init__(self):
-        self.pool = None
+# ========== ФАЙЛЫ ПОДПИСЧИКОВ ==========
+SUBSCRIBERS_FILE = "subscribers.json"
+full_path = os.path.abspath(SUBSCRIBERS_FILE)
+logger.info(f"📁 Путь к файлу подписчиков: {full_path}")
 
-    async def connect(self, max_retries: int = 5, retry_delay: int = 2):
-        """Создание пула соединений с повторными попытками при ошибках"""
-        db_url = DATABASE_URL
-        if 'sslmode' not in db_url:
-            db_url += '?sslmode=require'
+def load_subscribers():
+    if os.path.exists(SUBSCRIBERS_FILE):
+        try:
+            with open(SUBSCRIBERS_FILE, 'r') as f:
+                data = json.load(f)
+                subs = set(data)
+                logger.info(f"📂 Загружено подписчиков: {len(subs)}")
+                return subs
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки подписчиков: {e}")
+    else:
+        logger.warning(f"📂 Файл {SUBSCRIBERS_FILE} не существует")
+    return set()
 
-        for attempt in range(max_retries):
-            try:
-                self.pool = await asyncpg.create_pool(db_url)
-                logger.info(f"✅ Подключение к PostgreSQL установлено (попытка {attempt + 1})")
-                await self.init_tables()
-                return # Успех, выходим из функции
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка подключения к БД (попытка {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay * (2 ** attempt)) # Экспоненциальная задержка
-                else:
-                    logger.error(f"❌ Не удалось подключиться к БД после {max_retries} попыток.")
-                    raise # Если все попытки исчерпаны, пробрасываем исключение дальше
+def save_subscribers(subs):
+    try:
+        with open(SUBSCRIBERS_FILE, 'w') as f:
+            json.dump(list(subs), f)
+        logger.info(f"💾 Сохранено подписчиков: {len(subs)}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения подписчиков: {e}")
 
-        # Создаём таблицы, если их нет
-        await self.init_tables()
-
-    async def init_tables(self):
-        """Создание необходимых таблиц"""
-        async with self.pool.acquire() as conn:
-            # Таблица подписчиков
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS subscribers (
-                    user_id BIGINT PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-
-            # Таблица сигналов
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id SERIAL PRIMARY KEY,
-                    timestamp BIGINT NOT NULL,
-                    symbol VARCHAR(10) NOT NULL,
-                    price DECIMAL NOT NULL,
-                    direction VARCHAR(4) NOT NULL,
-                    tp DECIMAL,
-                    sl DECIMAL,
-                    result VARCHAR(10),
-                    exit_price DECIMAL,
-                    exit_time BIGINT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-
-            # Индексы для быстрого поиска
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result) WHERE result IS NULL')
-
-        logger.info("✅ Таблицы созданы/проверены")
-
-    # ========== РАБОТА С ПОДПИСЧИКАМИ ==========
-    async def get_subscribers(self) -> Set[int]:
-        """Получение всех подписчиков"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('SELECT user_id FROM subscribers')
-            return {row['user_id'] for row in rows}
-
-    async def add_subscriber(self, user_id: int):
-        """Добавление подписчика"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO subscribers (user_id) VALUES ($1)
-                ON CONFLICT (user_id) DO NOTHING
-            ''', user_id)
-
-    async def remove_subscriber(self, user_id: int):
-        """Удаление подписчика"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('DELETE FROM subscribers WHERE user_id = $1', user_id)
-
-    # ========== РАБОТА СО СТАТИСТИКОЙ ==========
-    async def add_signal(self, signal: Dict):
-        """Добавление сигнала в статистику"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO signals (
-                    timestamp, symbol, price, direction, tp, sl, result, exit_price, exit_time
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ''',
-                signal['timestamp'],
-                signal['symbol'],
-                signal['price'],
-                signal['direction'],
-                signal.get('tp'),
-                signal.get('sl'),
-                signal.get('result'),
-                signal.get('exit_price'),
-                signal.get('exit_time')
-            )
-
-    async def update_signal_results(self, symbol: str, current_price: float):
-        """Обновление результатов для открытых сигналов указанной пары"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT id, timestamp, price, direction, tp, sl
-                FROM signals
-                WHERE symbol = $1 AND result IS NULL
-            ''', symbol)
-
-            now = int(time.time())
-            updated = False
-
-            for row in rows:
-                signal_id = row['id']
-                direction = row['direction']
-                entry = row['price']
-                tp = row['tp']
-                sl = row['sl']
-
-                # Проверка тайм-аута (1 час)
-                if now - row['timestamp'] > 3600:
-                    await conn.execute('''
-                        UPDATE signals 
-                        SET result = 'timeout', exit_price = $1, exit_time = $2
-                        WHERE id = $3
-                    ''', current_price, now, signal_id)
-                    updated = True
-                    continue
-
-                if direction == 'buy':
-                    if tp and current_price >= tp:
-                        await conn.execute('''
-                            UPDATE signals 
-                            SET result = 'profit', exit_price = $1, exit_time = $2
-                            WHERE id = $3
-                        ''', tp, now, signal_id)
-                        updated = True
-                    elif sl and current_price <= sl:
-                        await conn.execute('''
-                            UPDATE signals 
-                            SET result = 'loss', exit_price = $1, exit_time = $2
-                            WHERE id = $3
-                        ''', sl, now, signal_id)
-                        updated = True
-                else:  # sell
-                    if tp and current_price <= tp:
-                        await conn.execute('''
-                            UPDATE signals 
-                            SET result = 'profit', exit_price = $1, exit_time = $2
-                            WHERE id = $3
-                        ''', tp, now, signal_id)
-                        updated = True
-                    elif sl and current_price >= sl:
-                        await conn.execute('''
-                            UPDATE signals 
-                            SET result = 'loss', exit_price = $1, exit_time = $2
-                            WHERE id = $3
-                        ''', sl, now, signal_id)
-                        updated = True
-
-            if updated:
-                logger.info(f"✅ Обновлены результаты сигналов для {symbol}")
-
-    async def get_summary(self, symbol: Optional[str] = None) -> Dict:
-        """Получение сводки по статистике (для всех пар или для конкретной)"""
-        async with self.pool.acquire() as conn:
-            query = 'SELECT COUNT(*) as total FROM signals'
-            params = []
-            if symbol:
-                query += ' WHERE symbol = $1'
-                params.append(symbol)
-
-            total = await conn.fetchval(query, *params)
-
-            if total == 0:
-                return {
-                    'total': 0, 'profit': 0, 'loss': 0, 'timeout': 0, 'unknown': 0,
-                    'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0,
-                    'total_profit_pips': 0, 'total_loss_pips': 0
-                }
-
-            # Подсчёт результатов
-            result_query = '''
-                SELECT 
-                    COUNT(*) FILTER (WHERE result = 'profit') as profit,
-                    COUNT(*) FILTER (WHERE result = 'loss') as loss,
-                    COUNT(*) FILTER (WHERE result = 'timeout') as timeout,
-                    COUNT(*) FILTER (WHERE result IS NULL) as unknown
-            '''
-            if symbol:
-                result_query += ' WHERE symbol = $1'
-
-            row = await conn.fetchrow(result_query, *params)
-            profit = row['profit']
-            loss = row['loss']
-            timeout = row['timeout']
-            unknown = row['unknown']
-
-            # Расчёт пипсов
-            pips_query = '''
-                SELECT 
-                    COALESCE(SUM(
-                        CASE 
-                            WHEN result = 'profit' AND direction = 'buy' THEN (exit_price - price) * 10000
-                            WHEN result = 'profit' AND direction = 'sell' THEN (price - exit_price) * 10000
-                            ELSE 0
-                        END
-                    ), 0) as total_profit_pips,
-                    COALESCE(SUM(
-                        CASE 
-                            WHEN result = 'loss' AND direction = 'buy' THEN ABS((exit_price - price) * 10000)
-                            WHEN result = 'loss' AND direction = 'sell' THEN ABS((price - exit_price) * 10000)
-                            ELSE 0
-                        END
-                    ), 0) as total_loss_pips
-                FROM signals
-                WHERE result IN ('profit', 'loss')
-            '''
-            if symbol:
-                pips_query += ' AND symbol = $1'
-
-            pips_row = await conn.fetchrow(pips_query, *params)
-            total_profit_pips = pips_row['total_profit_pips']
-            total_loss_pips = pips_row['total_loss_pips']
-
-            win_rate = (profit / (profit + loss) * 100) if (profit + loss) > 0 else 0
-            avg_profit = total_profit_pips / profit if profit > 0 else 0
-            avg_loss = total_loss_pips / loss if loss > 0 else 0
-
-            return {
-                'total': total,
-                'profit': profit,
-                'loss': loss,
-                'timeout': timeout,
-                'unknown': unknown,
-                'win_rate': win_rate,
-                'avg_profit': avg_profit,
-                'avg_loss': avg_loss,
-                'total_profit_pips': total_profit_pips,
-                'total_loss_pips': total_loss_pips
-            }
-
-
-# Глобальный экземпляр БД
-db = Database()
-# Множество подписчиков в памяти (для быстрого доступа)
-subscribers = set()
+subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
 
+# ======================================================================
+# Класс для управления статистикой сигналов (JSON)
+# ======================================================================
+class StatsManager:
+    def __init__(self, stats_file='stats.json'):
+        self.stats_file = stats_file
+        self.signals = []
+        self.load_stats()
+
+    def load_stats(self):
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, 'r') as f:
+                    self.signals = json.load(f)
+                logger.info(f"📊 Загружено записей статистики: {len(self.signals)}")
+            except Exception as e:
+                logger.error(f"Ошибка загрузки статистики: {e}")
+                self.signals = []
+        else:
+            self.signals = []
+
+    def save_stats(self):
+        try:
+            with open(self.stats_file, 'w') as f:
+                json.dump(self.signals, f, indent=2)
+            logger.info(f"💾 Статистика сохранена: {len(self.signals)} записей")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения статистики: {e}")
+
+    def add_signal(self, signal):
+        self.signals.append(signal)
+        self.save_stats()
+
+    def update_results(self, symbol, current_price):
+        updated = False
+        for sig in self.signals:
+            if sig.get('result') is not None or sig.get('symbol') != symbol:
+                continue
+            if time.time() - sig['timestamp'] > 3600:
+                sig['result'] = 'timeout'
+                sig['exit_price'] = current_price
+                sig['exit_time'] = time.time()
+                updated = True
+                continue
+
+            direction = sig['direction']
+            entry = sig['price']
+            tp = sig.get('tp')
+            sl = sig.get('sl')
+
+            if direction == 'buy':
+                if tp and current_price >= tp:
+                    sig['result'] = 'profit'
+                    sig['exit_price'] = tp
+                    sig['exit_time'] = time.time()
+                    updated = True
+                elif sl and current_price <= sl:
+                    sig['result'] = 'loss'
+                    sig['exit_price'] = sl
+                    sig['exit_time'] = time.time()
+                    updated = True
+            elif direction == 'sell':
+                if tp and current_price <= tp:
+                    sig['result'] = 'profit'
+                    sig['exit_price'] = tp
+                    sig['exit_time'] = time.time()
+                    updated = True
+                elif sl and current_price >= sl:
+                    sig['result'] = 'loss'
+                    sig['exit_price'] = sl
+                    sig['exit_time'] = time.time()
+                    updated = True
+
+        if updated:
+            self.save_stats()
+
+    def get_summary(self):
+        total = len(self.signals)
+        if total == 0:
+            return {
+                'total': 0, 'profit': 0, 'loss': 0, 'timeout': 0, 'unknown': 0,
+                'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0,
+                'total_profit_pips': 0, 'total_loss_pips': 0
+            }
+        profit = sum(1 for s in self.signals if s.get('result') == 'profit')
+        loss = sum(1 for s in self.signals if s.get('result') == 'loss')
+        timeout = sum(1 for s in self.signals if s.get('result') == 'timeout')
+        unknown = total - profit - loss - timeout
+
+        total_profit_pips = 0
+        total_loss_pips = 0
+        for s in self.signals:
+            if s.get('result') == 'profit' and s.get('exit_price') and s.get('price'):
+                if s['direction'] == 'buy':
+                    pips = (s['exit_price'] - s['price']) * 10000
+                else:
+                    pips = (s['price'] - s['exit_price']) * 10000
+                total_profit_pips += pips
+            elif s.get('result') == 'loss' and s.get('exit_price') and s.get('price'):
+                if s['direction'] == 'buy':
+                    pips = (s['exit_price'] - s['price']) * 10000
+                else:
+                    pips = (s['price'] - s['exit_price']) * 10000
+                total_loss_pips += abs(pips)
+
+        win_rate = (profit / (profit + loss) * 100) if (profit + loss) > 0 else 0
+        avg_profit = total_profit_pips / profit if profit > 0 else 0
+        avg_loss = total_loss_pips / loss if loss > 0 else 0
+
+        return {
+            'total': total,
+            'profit': profit,
+            'loss': loss,
+            'timeout': timeout,
+            'unknown': unknown,
+            'win_rate': win_rate,
+            'avg_profit': avg_profit,
+            'avg_loss': avg_loss,
+            'total_profit_pips': total_profit_pips,
+            'total_loss_pips': total_loss_pips
+        }
+
+stats_manager = StatsManager()
 
 # ======================================================================
 # Класс для работы с экономическим календарём (Finnworlds, без ключа)
@@ -304,7 +202,6 @@ class EconomicCalendar:
         self.last_update = None
         self.base_url = "https://api.finnworlds.com/v1/macroeconomic-calendar"
 
-        # Маппинг валютных пар на коды стран
         self.symbol_to_country = {
             'EUR/USD': ['DE', 'FR', 'IT', 'ES', 'EU'],
             'GBP/USD': ['GB'],
@@ -390,9 +287,7 @@ class EconomicCalendar:
                 risk_events.append(event)
         return len(risk_events) > 0, risk_events
 
-
 economic_calendar = EconomicCalendar()
-
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
@@ -451,9 +346,7 @@ class MLSignalGenerator:
             logger.warning(f"ML prediction error: {e}")
             return 0.5
 
-
 ml_gen = MLSignalGenerator()
-
 
 # ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ ==========
 class PriceStorage:
@@ -486,16 +379,13 @@ class PriceStorage:
         self.closes.clear()
         self.volumes.clear()
 
-
 price_storages = {sym: PriceStorage() for sym in SYMBOLS}
-
 
 # ========== ФУНКЦИИ ИНДИКАТОРОВ ==========
 def sma(data, period):
     if len(data) < period:
         return data[-1]
     return sum(data[-period:]) / period
-
 
 def ema(data, period):
     if len(data) < period:
@@ -505,7 +395,6 @@ def ema(data, period):
     for price in data[-period + 1:]:
         ema_val = (price - ema_val) * multiplier + ema_val
     return ema_val
-
 
 def rsi(data, period=14):
     if len(data) < period + 1:
@@ -526,7 +415,6 @@ def rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-
 def bbands(data, period=20, std=2):
     if len(data) < period:
         m = data[-1]
@@ -536,12 +424,10 @@ def bbands(data, period=20, std=2):
     s = variance ** 0.5
     return m + std * s, m, m - std * s
 
-
 def macd(data, fast=12, slow=26):
     if len(data) < slow:
         return 0.0
     return ema(data, fast) - ema(data, slow)
-
 
 def calculate_atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
@@ -556,7 +442,6 @@ def calculate_atr(highs, lows, closes, period=14):
     atr_percentage = (atr / closes[-1]) * 100
     return atr, atr_percentage
 
-
 def calculate_obv(closes, volumes):
     if len(closes) < 2 or len(volumes) < 2:
         return [0]
@@ -570,13 +455,11 @@ def calculate_obv(closes, volumes):
             obv.append(obv[-1])
     return obv
 
-
 def obv_trend(obv_values, period=14):
     if len(obv_values) < period:
         return "neutral"
     obv_ema = ema(obv_values, period)
     return "bullish" if obv_values[-1] > obv_ema else "bearish"
-
 
 def detect_false_breakout(highs, lows, closes, lookback=5):
     if len(closes) < lookback + 2:
@@ -596,7 +479,6 @@ def detect_false_breakout(highs, lows, closes, lookback=5):
             return "valid_breakout_down"
     return "no_breakout"
 
-
 def find_support_resistance(high, low, close, window=5):
     supports, resistances = [], []
     n = len(close)
@@ -607,7 +489,6 @@ def find_support_resistance(high, low, close, window=5):
         if all(high[i] >= high[i - j] for j in range(1, window + 1)) and \
                 all(high[i] >= high[i + j] for j in range(1, window + 1)):
             resistances.append(high[i])
-
     def cluster(levels, thr=0.0005):
         if not levels:
             return []
@@ -622,7 +503,6 @@ def find_support_resistance(high, low, close, window=5):
                 cl = [lev]
         res.append(sum(cl) / len(cl))
         return res
-
     supports = cluster(supports)
     resistances = cluster(resistances)
     cur = close[-1]
@@ -636,7 +516,6 @@ def find_support_resistance(high, low, close, window=5):
             nr = r
             break
     return supports[-3:], resistances[-3:], ns, nr
-
 
 def adx(highs, lows, closes, period=14):
     if len(closes) < period + 1:
@@ -660,7 +539,6 @@ def adx(highs, lows, closes, period=14):
     adx_val = sum([dx] * period) / period
     return adx_val, plus_di, minus_di
 
-
 def stochastic(highs, lows, closes, k_period=14, d_period=3):
     if len(closes) < k_period + d_period:
         return 50, 50
@@ -669,7 +547,6 @@ def stochastic(highs, lows, closes, k_period=14, d_period=3):
     k = 100 * (closes[-1] - lowest_low) / (highest_high - lowest_low) if (highest_high - lowest_low) != 0 else 50
     d = sum([k] * d_period) / d_period
     return k, d
-
 
 def pivot_points(high, low, close):
     pivot = (high + low + close) / 3
@@ -681,12 +558,10 @@ def pivot_points(high, low, close):
     s3 = low - 2 * (high - pivot)
     return pivot, r1, r2, r3, s1, s2, s3
 
-
 def calculate_normalized_score(ind):
     score = 0
     max_score = 0
 
-    # Фиксированные веса
     weight_rsi = 2
     weight_macd = 2
     weight_bb = 2
@@ -694,7 +569,6 @@ def calculate_normalized_score(ind):
     weight_sr = 2
     weight_3min = 1
 
-    # Динамические веса для ADX и Stochastic
     adx_value = ind.get('adx', 0)
     if adx_value < 20:
         weight_adx = 1
@@ -706,21 +580,18 @@ def calculate_normalized_score(ind):
         weight_adx = 2
         weight_stoch = 2
 
-    # RSI
     if ind['rsi'] < 30:
         score += weight_rsi
     elif ind['rsi'] > 70:
         score -= weight_rsi
     max_score += weight_rsi
 
-    # MACD
     if ind['macd'] > 0:
         score += weight_macd
     else:
         score -= weight_macd
     max_score += weight_macd
 
-    # Bollinger Bands
     price = ind['price']
     if price <= ind['bb_lower']:
         score += weight_bb
@@ -728,14 +599,12 @@ def calculate_normalized_score(ind):
         score -= weight_bb
     max_score += weight_bb
 
-    # EMA тренд
     if ind['ema'][5] > ind['ema'][20]:
         score += weight_ema
     else:
         score -= weight_ema
     max_score += weight_ema
 
-    # ADX
     if ind.get('adx', 0) > 25:
         if ind['plus_di'] > ind['minus_di']:
             score += weight_adx
@@ -743,7 +612,6 @@ def calculate_normalized_score(ind):
             score -= weight_adx
     max_score += weight_adx
 
-    # Stochastic
     stoch_k = ind.get('stoch_k', 50)
     if stoch_k < 20:
         score += weight_stoch
@@ -751,7 +619,6 @@ def calculate_normalized_score(ind):
         score -= weight_stoch
     max_score += weight_stoch
 
-    # Поддержка/сопротивление
     dist_to_sup = ind.get('distance_to_support', 1000)
     dist_to_res = ind.get('distance_to_resistance', 1000)
     if dist_to_sup < 10 and dist_to_sup < dist_to_res:
@@ -760,7 +627,6 @@ def calculate_normalized_score(ind):
         score -= weight_sr
     max_score += weight_sr
 
-    # 3-минутное изменение
     change = ind.get('change_3min', 0)
     if change > 0.0001:
         score += weight_3min
@@ -770,7 +636,6 @@ def calculate_normalized_score(ind):
 
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
-
 
 # ========== ЗАГРУЗКА ДАННЫХ ==========
 async def fetch_candles(symbol, api_key, bars=50):
@@ -790,7 +655,6 @@ async def fetch_candles(symbol, api_key, bars=50):
     except Exception as e:
         logger.error(f"fetch error for {symbol}: {e}")
     return None
-
 
 async def fetch_last_candle(symbol, api_key):
     url = "https://api.twelvedata.com/time_series"
@@ -812,7 +676,6 @@ async def fetch_last_candle(symbol, api_key):
         logger.error(f"fetch_last_candle error for {symbol}: {e}")
     return None
 
-
 async def update_prices(symbol):
     candles = await fetch_candles(symbol, TWELVE_API_KEY, 200)
     if candles:
@@ -821,7 +684,6 @@ async def update_prices(symbol):
             price_storages[symbol].add_candle(c)
         return True
     return False
-
 
 async def get_indicators(symbol):
     storage = price_storages.get(symbol)
@@ -965,7 +827,6 @@ async def get_indicators(symbol):
         logger.error(f"Error in get_indicators for {symbol}: {e}")
         return None
 
-
 # ========== ГЕНЕРАЦИЯ СООБЩЕНИЯ ==========
 def generate_message(ind, symbol, warning=None):
     try:
@@ -1022,7 +883,6 @@ def generate_message(ind, symbol, warning=None):
         logger.error(f"Unexpected error in generate_message: {e}")
         return "❌ Внутренняя ошибка при формировании сигнала"
 
-
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
     kb = [
@@ -1034,7 +894,6 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
@@ -1043,18 +902,15 @@ def before_request():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-
 @app.route('/')
 def index():
     return "<h1>🤖Currency pair</h1><p>Running</p>"
-
 
 @app.route('/health')
 def health():
     with subscribers_lock:
         count = len(subscribers)
     return jsonify({'status': 'ok', 'subscribers': count})
-
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1078,7 +934,6 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({'ok': False}), 500
 
-
 async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
@@ -1091,18 +946,20 @@ async def handle_callback(chat_id, cb, cb_id):
         elif cb == 'stats':
             await send_stats(bot, chat_id)
         elif cb == 'auto_on':
-            # Добавляем в базу
-            await db.add_subscriber(chat_id)
             with subscribers_lock:
                 subscribers.add(chat_id)
+                save_subscribers(subscribers)
+                logger.info(f"✅ Подписчик {chat_id} добавлен, теперь всего {len(subscribers)}")
             await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 3 мин)")
-            logger.info(f"✅ Подписчик {chat_id} добавлен")
         elif cb == 'auto_off':
-            await db.remove_subscriber(chat_id)
             with subscribers_lock:
-                subscribers.discard(chat_id)
-            await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
-            logger.info(f"⏹️ Подписчик {chat_id} удалён")
+                if chat_id in subscribers:
+                    subscribers.remove(chat_id)
+                    save_subscribers(subscribers)
+                    await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+                    logger.info(f"⏹️ Подписчик {chat_id} удалён")
+                else:
+                    await bot.send_message(chat_id, "❌ Автосигналы не были включены")
         elif cb == 'back':
             await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
         else:
@@ -1115,7 +972,6 @@ async def handle_callback(chat_id, cb, cb_id):
         except:
             pass
 
-
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
     if text == '/start':
@@ -1127,13 +983,15 @@ async def handle_message(chat_id, text):
     elif text == '/stats':
         await send_stats(bot, chat_id)
     elif text == '/stop':
-        await db.remove_subscriber(chat_id)
         with subscribers_lock:
-            subscribers.discard(chat_id)
-        await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+            if chat_id in subscribers:
+                subscribers.remove(chat_id)
+                save_subscribers(subscribers)
+                await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+            else:
+                await bot.send_message(chat_id, "❌ Автосигналы не были включены")
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
-
 
 async def send_signal(bot, chat_id):
     await bot.send_message(chat_id, "🔄 Анализирую EUR/USD...")
@@ -1142,8 +1000,7 @@ async def send_signal(bot, chat_id):
         await bot.send_message(chat_id, "❌ Ошибка получения данных для EUR/USD")
         return
     if ind['confidence'] < 65:
-        await bot.send_message(chat_id,
-                               f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
+        await bot.send_message(chat_id, f"⚠️ Уверенность сигнала слишком низкая ({ind['confidence']:.1f}%). Нужно минимум 65%.")
         return
 
     up = ind['prob_up']
@@ -1171,20 +1028,18 @@ async def send_signal(bot, chat_id):
         'exit_price': None,
         'exit_time': None
     }
-    await db.add_signal(signal_record)
+    stats_manager.add_signal(signal_record)
 
     msg = generate_message(ind, 'EUR/USD')
     await bot.send_message(chat_id, msg, parse_mode='Markdown')
-
 
 async def send_status(bot, chat_id):
     with subscribers_lock:
         auto = "вкл" if chat_id in subscribers else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
 
-
 async def send_stats(bot, chat_id):
-    summary = await db.get_summary()
+    summary = stats_manager.get_summary()
     if summary['total'] == 0:
         await bot.send_message(chat_id, "📊 Статистика пока пуста.")
         return
@@ -1205,7 +1060,6 @@ async def send_stats(bot, chat_id):
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
-
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
@@ -1213,12 +1067,12 @@ async def auto_worker():
         try:
             await asyncio.sleep(180)
 
-            # Загружаем подписчиков из БД (на всякий случай синхронизируем)
-            db_subs = await db.get_subscribers()
+            file_subs = load_subscribers()
             with subscribers_lock:
-                # Обновляем множество в памяти
-                subscribers.clear()
-                subscribers.update(db_subs)
+                if file_subs != subscribers:
+                    logger.warning(f"🔄 Подписчики в памяти ({len(subscribers)}) отличаются от файла ({len(file_subs)}). Синхронизируем.")
+                    subscribers.clear()
+                    subscribers.update(file_subs)
                 subs = list(subscribers)
 
             if not subs:
@@ -1232,8 +1086,7 @@ async def auto_worker():
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
                         logger.info(f"✅ {symbol}: новая свеча {new_candle.get('datetime')} = {current_price}")
-                        # Обновляем результаты в БД
-                        await db.update_signal_results(symbol, current_price)
+                        stats_manager.update_results(symbol, current_price)
                     else:
                         logger.warning(f"⚠️ {symbol}: не удалось получить свечу")
 
@@ -1242,7 +1095,7 @@ async def auto_worker():
                             bot = Bot(token=BOT_TOKEN)
                             ind = await get_indicators(symbol)
                             if ind and ind.get('confidence', 0) >= 65:
-                                # Проверяем новости
+                                # Проверяем фундаментальные новости
                                 has_risk, events = economic_calendar.check_symbol_risk(symbol)
                                 warning = None
                                 if has_risk:
@@ -1276,10 +1129,9 @@ async def auto_worker():
                                     'exit_price': None,
                                     'exit_time': None
                                 }
-                                await db.add_signal(signal_record)
+                                stats_manager.add_signal(signal_record)
 
-                                await bot.send_message(uid, generate_message(ind, symbol, warning),
-                                                       parse_mode='Markdown')
+                                await bot.send_message(uid, generate_message(ind, symbol, warning), parse_mode='Markdown')
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
                             else:
                                 conf = ind.get('confidence', 0) if ind else 0
@@ -1293,23 +1145,10 @@ async def auto_worker():
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             await asyncio.sleep(10)
 
-
 def start_worker():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(auto_worker())
-
-
-# Инициализация БД при старте
-async def init_db():
-    await db.connect()
-    global subscribers
-    subscribers = await db.get_subscribers()
-    logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
-
-
-# Запускаем инициализацию БД перед стартом фонового потока
-asyncio.run(init_db())
 
 threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")
