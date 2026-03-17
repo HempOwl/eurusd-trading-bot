@@ -29,11 +29,14 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
+ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID')
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
 if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
+if not ADMIN_CHAT_ID:
+    logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
 
 # ========== СПИСОК ВАЛЮТНЫХ ПАР ==========
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
@@ -70,6 +73,17 @@ def save_subscribers(subs):
 
 subscribers = load_subscribers()
 subscribers_lock = threading.Lock()
+
+
+# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА ==========
+async def notify_admin(bot: Bot, message: str):
+    """Отправляет сообщение администратору, если задан ADMIN_CHAT_ID"""
+    if ADMIN_CHAT_ID:
+        try:
+            await bot.send_message(ADMIN_CHAT_ID, f"⚠️ *Админ-уведомление*\n{message}", parse_mode='Markdown')
+            logger.info("📨 Уведомление администратору отправлено")
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить уведомление админу: {e}")
 
 
 # ======================================================================
@@ -641,12 +655,6 @@ def pivot_points(high, low, close):
 
 
 def get_5min_trend(storage):
-    """
-    Определяет направление тренда на 5-минутном графике:
-    'up' – последняя закрытая свеча выше предыдущей,
-    'down' – ниже,
-    'neutral' – равна или недостаточно данных.
-    """
     if len(storage.m5_closes) < 2:
         return 'neutral'
     if storage.m5_closes[-1] > storage.m5_closes[-2]:
@@ -1056,6 +1064,16 @@ def webhook():
         return jsonify({'ok': True})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
+        # Уведомляем админа о критической ошибке
+        if ADMIN_CHAT_ID:
+            try:
+                bot = Bot(token=BOT_TOKEN)
+                asyncio.run_coroutine_threadsafe(
+                    notify_admin(bot, f"❌ Критическая ошибка в webhook: {e}"),
+                    loop
+                )
+            except:
+                pass
         return jsonify({'ok': False}), 500
 
 
@@ -1094,6 +1112,8 @@ async def handle_callback(chat_id, cb, cb_id):
         logger.error(f"Error in handle_callback: {e}")
         try:
             await bot.send_message(chat_id, "⚠️ Внутренняя ошибка при обработке запроса")
+            # Уведомляем админа
+            await notify_admin(bot, f"❌ Ошибка в handle_callback для {chat_id}: {e}")
         except:
             pass
 
@@ -1194,6 +1214,14 @@ async def send_stats(bot, chat_id):
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
+    # Уведомляем админа о запуске
+    if ADMIN_CHAT_ID:
+        try:
+            bot = Bot(token=BOT_TOKEN)
+            await notify_admin(bot, "✅ Бот успешно запущен и начал авто-рассылку.")
+        except:
+            pass
+
     while True:
         try:
             await asyncio.sleep(180)
@@ -1271,11 +1299,27 @@ async def auto_worker():
                                 logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 65)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
+                            # Уведомляем админа
+                            try:
+                                bot = Bot(token=BOT_TOKEN)
+                                await notify_admin(bot, f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
+                            except:
+                                pass
                 except Exception as e:
                     logger.error(f"❌ Ошибка при обработке пары {symbol}: {e}")
+                    try:
+                        bot = Bot(token=BOT_TOKEN)
+                        await notify_admin(bot, f"❌ Ошибка при обработке пары {symbol}: {e}")
+                    except:
+                        pass
 
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
+            try:
+                bot = Bot(token=BOT_TOKEN)
+                await notify_admin(bot, f"❌ Критическая ошибка в auto_worker: {e}")
+            except:
+                pass
             await asyncio.sleep(10)
 
 
