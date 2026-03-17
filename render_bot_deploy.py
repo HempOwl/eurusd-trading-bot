@@ -38,8 +38,11 @@ if not TWELVE_API_KEY:
 if not ADMIN_CHAT_ID:
     logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
 
-# ========== СПИСОК ВАЛЮТНЫХ ПАР ==========
-SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
+# ========== РАСШИРЕННЫЙ СПИСОК ВАЛЮТНЫХ ПАР ==========
+SYMBOLS = [
+    'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD',
+    'USD/CHF', 'NZD/USD', 'EUR/GBP', 'EUR/JPY', 'GBP/JPY'
+]
 
 # ========== ФАЙЛЫ ПОДПИСЧИКОВ ==========
 SUBSCRIBERS_FILE = "subscribers.json"
@@ -224,7 +227,10 @@ class EconomicCalendar:
             'AUD/USD': ['AU'],
             'USD/CAD': ['CA'],
             'USD/CHF': ['CH'],
-            'NZD/USD': ['NZ']
+            'NZD/USD': ['NZ'],
+            'EUR/GBP': ['EU', 'GB'],
+            'EUR/JPY': ['EU', 'JP'],
+            'GBP/JPY': ['GB', 'JP']
         }
         self.important_levels = ['High', 'Medium']
 
