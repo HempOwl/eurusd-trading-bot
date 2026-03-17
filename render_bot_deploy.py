@@ -729,9 +729,10 @@ def calculate_normalized_score(ind):
 
 # ========== ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ POLYGON.IO ==========
 async def fetch_candles(symbol, api_key, bars=50):
-    # Преобразуем символ из формата EUR/USD в X:EURUSD для Polygon
+    # Преобразуем символ из формата EUR/USD в формат Polygon для Forex
     base, quote = symbol.split('/')
-    polygon_symbol = f"X:{base}{quote}"
+    # Для Forex используем префикс C: и убираем слэш
+    polygon_symbol = f"C:{base}{quote}"
     url = f"https://api.polygon.io/v2/aggs/ticker/{polygon_symbol}/range/1/minute/{bars}"
     params = {
         'adjusted': 'true',
@@ -745,7 +746,6 @@ async def fetch_candles(symbol, api_key, bars=50):
                     data = await resp.json()
                     results = data.get('results', [])
                     candles = []
-                    # Polygon выдаёт от новых к старым, разворачиваем для хронологии
                     for item in reversed(results):
                         candle = {
                             'datetime': datetime.fromtimestamp(item['t']//1000).strftime('%Y-%m-%d %H:%M:%S'),
@@ -758,7 +758,8 @@ async def fetch_candles(symbol, api_key, bars=50):
                         candles.append(candle)
                     return candles
                 else:
-                    logger.error(f"Polygon error for {symbol}: {resp.status}")
+                    error_text = await resp.text()
+                    logger.error(f"Polygon error for {symbol} ({polygon_symbol}): {resp.status} - {error_text}")
                     return None
     except Exception as e:
         logger.error(f"fetch error for {symbol}: {e}")
@@ -775,7 +776,7 @@ async def update_prices(symbol):
     candles = await fetch_candles(symbol, POLYGON_API_KEY, 200)
     if candles:
         price_storages[symbol].clear()
-        for c in candles[::-1]:  # уже reversed в fetch_candles, но на всякий случай
+        for c in candles:
             price_storages[symbol].add_candle(c)
         return True
     return False
