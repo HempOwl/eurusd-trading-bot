@@ -1003,7 +1003,7 @@ def main_menu():
     kb = [
         [InlineKeyboardButton("📈 Статус", callback_data='status'),
          InlineKeyboardButton("📊 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("🔔 Автосигнал (5 мин)", callback_data='auto_on'),
+        [InlineKeyboardButton("🔔 Автосигнал (3 мин)", callback_data='auto_on'),
          InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
@@ -1071,7 +1071,7 @@ async def handle_callback(chat_id, cb, cb_id):
             async with subscribers_lock:
                 subscribers.add(chat_id)
                 await async_save_subscribers(subscribers)
-            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 5 мин)")
+            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 3 мин)")
             logger.info(f"✅ Подписчик {chat_id} добавлен")
         elif cb == 'auto_off':
             async with subscribers_lock:
@@ -1143,17 +1143,17 @@ async def send_stats(bot, chat_id):
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
-    logger.info("🚀 Автосигналы запущены (интервал 5 мин)")
+    logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
     if ADMIN_CHAT_ID:
         try:
             bot = Bot(token=BOT_TOKEN)
-            await notify_admin(bot, "✅ Бот успешно запущен и начал авто-рассылку (5 мин).")
+            await notify_admin(bot, "✅ Бот успешно запущен.")
         except:
             pass
 
     while True:
         try:
-            await asyncio.sleep(300)  # 5 минут
+            await asyncio.sleep(180)  # 3 минуты
 
             file_subs = await async_load_subscribers()
             async with subscribers_lock:
