@@ -1071,7 +1071,7 @@ async def handle_callback(chat_id, cb, cb_id):
             async with subscribers_lock:
                 subscribers.add(chat_id)
                 await async_save_subscribers(subscribers)
-            await bot.send_message(chat_id, "✅ Автосигналы включены (каждые 3 мин)")
+            await bot.send_message(chat_id, "✅ Автосигналы включены")
             logger.info(f"✅ Подписчик {chat_id} добавлен")
         elif cb == 'auto_off':
             async with subscribers_lock:
@@ -1143,7 +1143,7 @@ async def send_stats(bot, chat_id):
 
 # ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
-    logger.info("🚀 Автосигналы запущены (интервал 3 мин)")
+    logger.info("🚀 Автосигналы запущены")
     if ADMIN_CHAT_ID:
         try:
             bot = Bot(token=BOT_TOKEN)
@@ -1153,7 +1153,7 @@ async def auto_worker():
 
     while True:
         try:
-            await asyncio.sleep(180)  # 3 минуты
+            await asyncio.sleep(300)  # 5 минут
 
             file_subs = await async_load_subscribers()
             async with subscribers_lock:
