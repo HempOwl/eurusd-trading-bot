@@ -111,8 +111,29 @@ def init_db_sync():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Новая таблица для связи сигналов с получателями
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS signal_recipients (
+            signal_id INTEGER,
+            user_id INTEGER,
+            PRIMARY KEY (signal_id, user_id)
+        )
+    ''')
+    # Новая таблица для уведомлений о закрытых сделках
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pending_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            signal_id INTEGER NOT NULL,
+            result TEXT NOT NULL,
+            exit_price REAL,
+            pips REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result) WHERE result IS NULL')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user ON pending_notifications(user_id)')
     conn.commit()
     conn.close()
     logger.info("✅ База данных инициализирована (с новыми таблицами)")
@@ -144,7 +165,8 @@ def remove_subscriber_sync(user_id: int) -> bool:
     conn.close()
     return removed
 
-def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optional[float] = None):
+def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optional[float] = None) -> int:
+    """Добавляет сигнал и возвращает его ID."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -163,10 +185,24 @@ def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optio
         signal.get('exit_time'),
         json.dumps(features) if features else None
     ))
+    signal_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return signal_id
+
+def add_signal_recipient_sync(signal_id: int, user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO signal_recipients (signal_id, user_id) VALUES (?, ?)',
+              (signal_id, user_id))
     conn.commit()
     conn.close()
 
-def update_signal_results_sync(symbol: str, current_price: float):
+def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
+    """
+    Обновляет результаты открытых сигналов.
+    Возвращает список закрытых сигналов с их ID и результатом.
+    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -177,14 +213,23 @@ def update_signal_results_sync(symbol: str, current_price: float):
     rows = c.fetchall()
     now = int(time.time())
     updated = False
+    closed_signals = []  # (signal_id, result, exit_price, pips)
     for row in rows:
         signal_id, ts, entry, direction, tp, sl, features_json = row
         if now - ts > 3600:
+            # Тайм-аут
             c.execute('''
                 UPDATE signals SET result = 'timeout', exit_price = ?, exit_time = ?
                 WHERE id = ?
             ''', (current_price, now, signal_id))
             updated = True
+            closed_signals.append({
+                'signal_id': signal_id,
+                'result': 'timeout',
+                'exit_price': current_price,
+                'pips': 0,
+                'features_json': features_json
+            })
             continue
         if direction == 'buy':
             if tp and current_price >= tp:
@@ -193,44 +238,82 @@ def update_signal_results_sync(symbol: str, current_price: float):
                     WHERE id = ?
                 ''', (tp, now, signal_id))
                 updated = True
-                result = 1
+                pips = (tp - entry) * 10000
+                closed_signals.append({
+                    'signal_id': signal_id,
+                    'result': 'profit',
+                    'exit_price': tp,
+                    'pips': pips,
+                    'features_json': features_json
+                })
             elif sl and current_price <= sl:
                 c.execute('''
                     UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
                     WHERE id = ?
                 ''', (sl, now, signal_id))
                 updated = True
-                result = 0
-            else:
-                continue
-        else:
+                pips = (sl - entry) * 10000
+                closed_signals.append({
+                    'signal_id': signal_id,
+                    'result': 'loss',
+                    'exit_price': sl,
+                    'pips': pips,
+                    'features_json': features_json
+                })
+        else:  # sell
             if tp and current_price <= tp:
                 c.execute('''
                     UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
                     WHERE id = ?
                 ''', (tp, now, signal_id))
                 updated = True
-                result = 1
+                pips = (entry - tp) * 10000
+                closed_signals.append({
+                    'signal_id': signal_id,
+                    'result': 'profit',
+                    'exit_price': tp,
+                    'pips': pips,
+                    'features_json': features_json
+                })
             elif sl and current_price >= sl:
                 c.execute('''
                     UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
                     WHERE id = ?
                 ''', (sl, now, signal_id))
                 updated = True
-                result = 0
-            else:
-                continue
-        # Если сделка закрылась, сохраняем в ml_training_data
-        if features_json:
-            try:
-                features = json.loads(features_json)
-                c.execute('INSERT INTO ml_training_data (features, result) VALUES (?, ?)',
-                          (json.dumps(features), result))
-            except:
-                pass
+                pips = (entry - sl) * 10000
+                closed_signals.append({
+                    'signal_id': signal_id,
+                    'result': 'loss',
+                    'exit_price': sl,
+                    'pips': pips,
+                    'features_json': features_json
+                })
     if updated:
         conn.commit()
+    # Если есть закрытые сигналы, создаём уведомления для получателей
+    for cs in closed_signals:
+        # Находим всех получателей этого сигнала
+        c.execute('SELECT user_id FROM signal_recipients WHERE signal_id = ?', (cs['signal_id'],))
+        recipients = c.fetchall()
+        for (user_id,) in recipients:
+            c.execute('''
+                INSERT INTO pending_notifications (user_id, signal_id, result, exit_price, pips)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, cs['signal_id'], cs['result'], cs['exit_price'], cs['pips']))
+        # Сохраняем для ML
+        if cs['features_json']:
+            try:
+                features = json.loads(cs['features_json'])
+                result_int = 1 if cs['result'] == 'profit' else 0
+                c.execute('INSERT INTO ml_training_data (features, result) VALUES (?, ?)',
+                          (json.dumps(features), result_int))
+            except:
+                pass
+    if closed_signals:
+        conn.commit()
     conn.close()
+    return closed_signals
 
 def get_summary_sync(symbol: Optional[str] = None) -> Dict:
     conn = sqlite3.connect(DB_PATH)
@@ -370,6 +453,31 @@ def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
     conn.commit()
     conn.close()
 
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С УВЕДОМЛЕНИЯМИ ==========
+def get_pending_notifications_sync() -> List[Dict]:
+    """Возвращает все непрочитанные уведомления."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, user_id, signal_id, result, exit_price, pips
+        FROM pending_notifications
+        ORDER BY created_at
+    ''')
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {'id': r[0], 'user_id': r[1], 'signal_id': r[2],
+         'result': r[3], 'exit_price': r[4], 'pips': r[5]}
+        for r in rows
+    ]
+
+def delete_notification_sync(notif_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM pending_notifications WHERE id = ?', (notif_id,))
+    conn.commit()
+    conn.close()
+
 # ========== НОВЫЕ ФУНКЦИИ ДЛЯ КЭШИРОВАНИЯ ИНДИКАТОРОВ ==========
 def save_indicators_cache_sync(symbol: str, indicators: Dict):
     conn = sqlite3.connect(DB_PATH)
@@ -413,7 +521,6 @@ async def fetch_spread(symbol: str, api_key: str) -> Optional[float]:
 
 # ========== ФУНКЦИЯ ДЛЯ ОБУЧЕНИЯ МОДЕЛИ ==========
 async def train_model_periodically():
-    """Запускается в отдельном фоновом потоке, раз в сутки обучает модель."""
     while True:
         await asyncio.sleep(86400)  # 24 часа
         await train_model()
@@ -627,7 +734,7 @@ class EconomicCalendar:
 
 economic_calendar = EconomicCalendar()
 
-# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ (ДОБАВЛЕНО ПОЛЕ current_spread) ==========
+# ========== ХРАНИЛИЩЕ ДАННЫХ ДЛЯ КАЖДОЙ ПАРЫ ==========
 class PriceStorage:
     def __init__(self, maxlen=200):
         self.maxlen = maxlen
@@ -646,7 +753,7 @@ class PriceStorage:
         self.m5_closes = []
         self.m5_timestamps = []
         self._current_m5 = None
-        self.current_spread = None  # для хранения последнего спреда
+        self.current_spread = None
 
     def is_cache_valid(self):
         return self.cached_indicators is not None and (time.time() - self.cache_time) < self.cache_ttl
@@ -1019,7 +1126,6 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
         logger.error(f"Нет хранилища для {symbol}")
         return None
 
-    # Сначала пробуем загрузить из кэша БД
     cached = await asyncio.to_thread(load_indicators_cache_sync, symbol, storage.cache_ttl)
     if cached:
         storage.cached_indicators = cached
@@ -1122,10 +1228,8 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
             ind['prob_up'] = 50 + ind['ml_score'] / 2
             ind['prob_down'] = 50 - ind['ml_score'] / 2
         ind['confidence'] = abs(ind['ml_score'])
-        # Получаем предсказание ML и корректируем уверенность
         ml_prob = ml_gen.predict(ind)
         ind['ml_prob_up'] = ml_prob
-        # Комбинируем уверенность с ML (вес 70% от текущей, 30% от ML)
         ind['confidence'] = ind['confidence'] * 0.7 + ml_prob * 30
 
         trend_5min = get_5min_trend(storage)
@@ -1139,7 +1243,6 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
         storage.last_signal = ind
         storage.cached_indicators = ind
         storage.cache_time = time.time()
-        # Сохраняем в кэш БД
         await asyncio.to_thread(save_indicators_cache_sync, symbol, ind)
         return ind
     except Exception as e:
@@ -1356,19 +1459,19 @@ async def auto_worker():
                 continue
             for symbol in SYMBOLS:
                 try:
-                    # Обновляем спред для пары
                     spread = await fetch_spread(symbol, TWELVE_API_KEY)
                     if spread is not None:
                         price_storages[symbol].current_spread = spread
-                    # Получаем свечу
                     new_candle = await fetch_last_candle(symbol, TWELVE_API_KEY)
                     if new_candle:
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
                         logger.info(f"✅ {symbol}: новая свеча {new_candle.get('datetime')} = {current_price}")
-                        await asyncio.to_thread(update_signal_results_sync, symbol, current_price)
+                        # Обновляем результаты и получаем закрытые сигналы
+                        closed_signals = await asyncio.to_thread(update_signal_results_sync, symbol, current_price)
                     else:
                         logger.warning(f"⚠️ {symbol}: не удалось получить свечу")
+                        closed_signals = []
 
                     for uid in subs:
                         try:
@@ -1388,7 +1491,7 @@ async def auto_worker():
                                 atr = ind.get('atr', 0.001)
                                 tp_distance = atr * 1.5
                                 sl_distance = atr * 0.75
-                                spread = price_storages[symbol].current_spread or 0.0002  # запасное значение
+                                spread = price_storages[symbol].current_spread or 0.0002
                                 if direction == 'buy':
                                     tp = entry + tp_distance - spread/2
                                     sl = entry - sl_distance + spread/2
@@ -1407,7 +1510,9 @@ async def auto_worker():
                                     'exit_time': None
                                 }
                                 features = ml_gen.prepare_features(ind)
-                                await asyncio.to_thread(add_signal_sync, signal_record, features, spread)
+                                signal_id = await asyncio.to_thread(add_signal_sync, signal_record, features, spread)
+                                # Записываем получателя
+                                await asyncio.to_thread(add_signal_recipient_sync, signal_id, uid)
                                 await bot.send_message(uid, generate_message(ind, symbol, warning), parse_mode='Markdown')
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
                             else:
@@ -1427,6 +1532,10 @@ async def auto_worker():
                         await notify_admin(bot, f"❌ Ошибка при обработке пары {symbol}: {e}")
                     except:
                         pass
+
+            # Раз в минуту отправляем накопившиеся уведомления
+            await send_pending_notifications()
+            await asyncio.sleep(60)  # маленькая пауза для уведомлений
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             try:
@@ -1435,6 +1544,26 @@ async def auto_worker():
             except:
                 pass
             await asyncio.sleep(10)
+
+async def send_pending_notifications():
+    """Отправляет все ожидающие уведомления пользователям."""
+    notifs = await asyncio.to_thread(get_pending_notifications_sync)
+    for n in notifs:
+        try:
+            bot = Bot(token=BOT_TOKEN)
+            # Формируем сообщение
+            result_emoji = "✅" if n['result'] == 'profit' else "❌" if n['result'] == 'loss' else "⏳"
+            msg = f"{result_emoji} *Сигнал #{n['signal_id']} закрыт*\nРезультат: {n['result']}\n"
+            if n['exit_price']:
+                msg += f"Цена выхода: {n['exit_price']:.5f}\n"
+            if n['pips']:
+                msg += f"Прибыль: {n['pips']:.1f} пипсов"
+            await bot.send_message(n['user_id'], msg, parse_mode='Markdown')
+            # Удаляем уведомление после отправки
+            await asyncio.to_thread(delete_notification_sync, n['id'])
+            logger.info(f"📨 Уведомление о сигнале {n['signal_id']} отправлено пользователю {n['user_id']}")
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления: {e}")
 
 def start_worker():
     loop = asyncio.new_event_loop()
@@ -1453,7 +1582,7 @@ load_subscribers_from_db()
 # ========== ЗАПУСК ФОНОВЫХ ПОТОКОВ ==========
 threading.Thread(target=start_worker, daemon=True).start()
 threading.Thread(target=start_training, daemon=True).start()
-logger.info("✅ Фоновые потоки запущены (автосигналы + обучение модели)")
+logger.info("✅ Фоновые потоки запущены (автосигналы + обучение модели + уведомления)")
 
 # ========== ЗАПУСК FLASK ==========
 if __name__ == '__main__':
