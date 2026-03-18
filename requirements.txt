@@ -16,3 +16,4 @@ asyncpg
 aiofiles
 aiosqlite
 joblib
+xgboost

@@ -13,6 +13,9 @@ import sqlite3
 import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split
+import xgboost as xgb
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
@@ -129,6 +132,17 @@ def init_db_sync():
             exit_price REAL,
             pips REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # Новая таблица для хранения метрик модели
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS model_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            accuracy REAL,
+            precision REAL,
+            recall REAL,
+            f1 REAL,
+            timestamp INTEGER NOT NULL
         )
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
@@ -519,6 +533,38 @@ async def fetch_spread(symbol: str, api_key: str) -> Optional[float]:
         logger.error(f"Error fetching spread for {symbol}: {e}")
         return None
 
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С МЕТРИКАМИ МОДЕЛИ ==========
+def save_model_metrics_sync(metrics: Dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO model_metrics (accuracy, precision, recall, f1, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (metrics['accuracy'], metrics['precision'], metrics['recall'], metrics['f1'], int(time.time())))
+    conn.commit()
+    conn.close()
+
+def get_latest_metrics_sync() -> Optional[Dict]:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT accuracy, precision, recall, f1, timestamp
+        FROM model_metrics
+        ORDER BY timestamp DESC
+        LIMIT 1
+    ''')
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            'accuracy': row[0],
+            'precision': row[1],
+            'recall': row[2],
+            'f1': row[3],
+            'timestamp': row[4]
+        }
+    return None
+
 # ========== ФУНКЦИЯ ДЛЯ ОБУЧЕНИЯ МОДЕЛИ ==========
 async def train_model_periodically():
     while True:
@@ -537,7 +583,7 @@ async def train_model():
             return
         X = [json.loads(row[0]) for row in rows]
         y = [row[1] for row in rows]
-        ml_gen.train(X, y)
+        ml_gen.train(X, y)  # метод train теперь возвращает метрики и сохраняет их
     await asyncio.to_thread(_train)
 
 # ========== ГЛОБАЛЬНОЕ МНОЖЕСТВО ПОДПИСЧИКОВ И ЗАМОК ==========
@@ -570,30 +616,45 @@ def remove_subscriber_mem(user_id: int) -> bool:
             subscribers.discard(user_id)
     return removed
 
-# ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
+# ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ (УЛУЧШЕННЫЙ) ==========
 class MLSignalGenerator:
-    def __init__(self, model_path='model.pkl'):
+    def __init__(self, model_path='model.json', model_type='xgb'):
         self.model = None
         self.model_path = model_path
+        self.model_type = model_type  # 'xgb' или 'rf'
         self.load_model()
 
     def load_model(self):
         if os.path.exists(self.model_path):
             try:
-                self.model = joblib.load(self.model_path)
+                if self.model_type == 'xgb':
+                    self.model = xgb.XGBClassifier()
+                    self.model.load_model(self.model_path)
+                else:
+                    self.model = joblib.load(self.model_path)
                 logger.info(f"ML model loaded from {self.model_path}")
             except Exception as e:
                 logger.error(f"Failed to load model: {e}")
-                self.model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+                self._create_default_model()
+        else:
+            self._create_default_model()
+
+    def _create_default_model(self):
+        if self.model_type == 'xgb':
+            self.model = xgb.XGBClassifier(n_estimators=100, max_depth=5, random_state=42, eval_metric='logloss')
         else:
             self.model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-            logger.info("New ML model created")
+        logger.info(f"New {self.model_type} model created")
 
     def save_model(self):
         if self.model is not None:
-            joblib.dump(self.model, self.model_path)
+            if self.model_type == 'xgb':
+                self.model.save_model(self.model_path)
+            else:
+                joblib.dump(self.model, self.model_path)
 
     def prepare_features(self, ind: Dict) -> List[float]:
+        # Базовые признаки
         features = [
             ind.get('rsi', 50),
             ind.get('macd', 0),
@@ -611,6 +672,9 @@ class MLSignalGenerator:
             ind.get('adx', 0),
             ind.get('plus_di', 0),
             ind.get('minus_di', 0),
+            ind.get('hour', 0),           # час
+            ind.get('weekday', 0),         # день недели
+            ind.get('norm_volume', 0),     # нормализованный объём
         ]
         return features
 
@@ -618,7 +682,7 @@ class MLSignalGenerator:
         if self.model is None:
             return 0.5
         try:
-            if not hasattr(self.model, 'estimators_'):
+            if not hasattr(self.model, 'predict_proba'):
                 return 0.5
             features = self.prepare_features(ind)
             X = np.array(features).reshape(1, -1)
@@ -629,9 +693,22 @@ class MLSignalGenerator:
             return 0.5
 
     def train(self, X: List[List[float]], y: List[int]):
-        self.model.fit(X, y)
+        # Разделяем на обучающую и тестовую выборки (80/20)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        self.model.fit(X_train, y_train)
         self.save_model()
-        logger.info("ML model trained and saved")
+        # Оцениваем качество
+        y_pred = self.model.predict(X_test)
+        metrics = {
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0)
+        }
+        # Сохраняем метрики в БД
+        save_model_metrics_sync(metrics)
+        logger.info(f"ML model trained. Metrics: {metrics}")
+        return metrics
 
 ml_gen = MLSignalGenerator()
 
@@ -1228,6 +1305,22 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
             ind['prob_up'] = 50 + ind['ml_score'] / 2
             ind['prob_down'] = 50 - ind['ml_score'] / 2
         ind['confidence'] = abs(ind['ml_score'])
+
+        # Добавляем новые признаки для ML
+        now = datetime.now()
+        ind['hour'] = now.hour
+        ind['weekday'] = now.weekday()
+        # Нормализованный объём
+        if len(storage.volumes) >= 20:
+            avg_volume = np.mean(storage.volumes[-20:])
+            if avg_volume != 0:
+                norm_vol = ind.get('obv', 0) / avg_volume
+            else:
+                norm_vol = 0
+        else:
+            norm_vol = 0
+        ind['norm_volume'] = norm_vol
+
         ml_prob = ml_gen.predict(ind)
         ind['ml_prob_up'] = ml_prob
         ind['confidence'] = ind['confidence'] * 0.7 + ml_prob * 30
@@ -1410,6 +1503,8 @@ async def handle_message(chat_id, text):
             await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
         else:
             await bot.send_message(chat_id, "ℹ️ Автосигналы не были включены")
+    elif text == '/model_stats':
+        await send_model_stats(bot, chat_id)
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
@@ -1438,6 +1533,21 @@ async def send_stats(bot, chat_id):
 💵 Общая прибыль: {summary['total_profit_pips']:.1f} пипсов
 💸 Общий убыток: {summary['total_loss_pips']:.1f} пипсов
 📊 Чистый результат: {summary['total_profit_pips'] - summary['total_loss_pips']:.1f} пипсов
+"""
+    await bot.send_message(chat_id, text, parse_mode='Markdown')
+
+async def send_model_stats(bot, chat_id):
+    metrics = await asyncio.to_thread(get_latest_metrics_sync)
+    if not metrics:
+        await bot.send_message(chat_id, "📊 Модель ещё не обучена. Нужно накопить минимум 100 сделок.")
+        return
+    dt = datetime.fromtimestamp(metrics['timestamp']).strftime('%Y-%m-%d %H:%M')
+    text = f"""🤖 *Статистика ML-модели* (обновлено: {dt})
+
+📈 Точность (accuracy): `{metrics['accuracy']:.3f}`
+🎯 Прецизионность: `{metrics['precision']:.3f}`
+🔄 Полнота (recall): `{metrics['recall']:.3f}`
+⚖️ F1-мера: `{metrics['f1']:.3f}`
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
