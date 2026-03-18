@@ -1138,7 +1138,12 @@ async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
     try:
-        await bot.answer_callback_query(cb_id)
+        # Мягкий ответ на callback – если не успели, ничего страшного
+        try:
+            await bot.answer_callback_query(cb_id)
+        except Exception as e:
+            logger.warning(f"Не удалось ответить на callback (возможно, устарел): {e}")
+
         if cb == 'status':
             await send_status(bot, chat_id)
         elif cb == 'stats':
@@ -1161,7 +1166,10 @@ async def handle_callback(chat_id, cb, cb_id):
             pass
 
 async def process_auto_on(bot: Bot, chat_id: int):
-    # Выполняем синхронную операцию в потоке, чтобы не блокировать
+    # Проверим, не подписан ли уже
+    if await asyncio.to_thread(get_subscriber_status_mem, chat_id):
+        await bot.send_message(chat_id, "ℹ️ Автосигналы уже включены")
+        return
     await asyncio.to_thread(add_subscriber_mem, chat_id)
     await bot.send_message(chat_id, "✅ Автосигналы включены")
     logger.info(f"✅ Подписчик {chat_id} добавлен")
