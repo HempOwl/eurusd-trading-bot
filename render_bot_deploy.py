@@ -47,7 +47,7 @@ api_errors = {}
 API_ERROR_THRESHOLD = 5
 API_ERROR_WINDOW = 60 * 60  # 1 час
 
-# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА (без Markdown) ==========
+# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА ==========
 async def notify_admin(bot: Bot, message: str):
     if ADMIN_CHAT_ID:
         try:
@@ -332,6 +332,35 @@ def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
         ))
     conn.commit()
     conn.close()
+
+# ========== ГЛОБАЛЬНОЕ МНОЖЕСТВО ПОДПИСЧИКОВ И ЗАМОК ==========
+subscribers = set()
+subscribers_lock = threading.Lock()
+
+# ========== СИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ В ПАМЯТИ ==========
+def add_subscriber_mem(user_id: int):
+    global subscribers
+    with subscribers_lock:
+        add_subscriber_sync(user_id)
+        subscribers.add(user_id)
+
+def remove_subscriber_mem(user_id: int):
+    global subscribers
+    with subscribers_lock:
+        remove_subscriber_sync(user_id)
+        subscribers.discard(user_id)
+
+def get_subscriber_status_mem(user_id: int) -> bool:
+    with subscribers_lock:
+        return user_id in subscribers
+
+def load_subscribers_from_db():
+    global subscribers
+    db_subs = get_subscribers_sync()
+    with subscribers_lock:
+        subscribers.clear()
+        subscribers.update(db_subs)
+    logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
@@ -1070,7 +1099,9 @@ def index():
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'subscribers': len(subscribers)})
+    with subscribers_lock:
+        count = len(subscribers)
+    return jsonify({'status': 'ok', 'subscribers': count})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1103,9 +1134,6 @@ def webhook():
                 pass
         return jsonify({'ok': False}), 500
 
-subscribers = set()
-subscribers_lock = asyncio.Lock()
-
 async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
@@ -1116,7 +1144,6 @@ async def handle_callback(chat_id, cb, cb_id):
         elif cb == 'stats':
             await send_stats(bot, chat_id)
         elif cb == 'auto_on':
-            # Запускаем фоновую задачу, чтобы не блокировать ответ
             asyncio.create_task(process_auto_on(bot, chat_id))
         elif cb == 'auto_off':
             asyncio.create_task(process_auto_off(bot, chat_id))
@@ -1134,21 +1161,16 @@ async def handle_callback(chat_id, cb, cb_id):
             pass
 
 async def process_auto_on(bot: Bot, chat_id: int):
-    async with subscribers_lock:
-        await asyncio.to_thread(add_subscriber_sync, chat_id)
-        subscribers.add(chat_id)
+    # Выполняем синхронную операцию в потоке, чтобы не блокировать
+    await asyncio.to_thread(add_subscriber_mem, chat_id)
     await bot.send_message(chat_id, "✅ Автосигналы включены")
     logger.info(f"✅ Подписчик {chat_id} добавлен")
 
 async def process_auto_off(bot: Bot, chat_id: int):
-    async with subscribers_lock:
-        if chat_id in subscribers:
-            await asyncio.to_thread(remove_subscriber_sync, chat_id)
-            subscribers.remove(chat_id)
-            await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
-            logger.info(f"⏹️ Подписчик {chat_id} удалён")
-        else:
-            await bot.send_message(chat_id, "❌ Автосигналы не были включены")
+    # Выполняем синхронную операцию в потоке
+    await asyncio.to_thread(remove_subscriber_mem, chat_id)
+    await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+    logger.info(f"⏹️ Подписчик {chat_id} удалён")
 
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
@@ -1159,19 +1181,14 @@ async def handle_message(chat_id, text):
     elif text == '/stats':
         await send_stats(bot, chat_id)
     elif text == '/stop':
-        async with subscribers_lock:
-            if chat_id in subscribers:
-                await asyncio.to_thread(remove_subscriber_sync, chat_id)
-                subscribers.remove(chat_id)
-                await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
-            else:
-                await bot.send_message(chat_id, "❌ Автосигналы не были включены")
+        await asyncio.to_thread(remove_subscriber_mem, chat_id)
+        await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
 async def send_status(bot, chat_id):
-    async with subscribers_lock:
-        auto = "вкл" if chat_id in subscribers else "выкл"
+    # Получаем статус через синхронную функцию в потоке
+    auto = "вкл" if await asyncio.to_thread(get_subscriber_status_mem, chat_id) else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
 
 async def send_stats(bot, chat_id):
@@ -1209,6 +1226,7 @@ async def auto_worker():
     while True:
         try:
             await asyncio.sleep(600)  # 10 минут
+            # Получаем подписчиков синхронно в потоке
             subs = await asyncio.to_thread(get_subscribers_sync)
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
@@ -1291,8 +1309,7 @@ def start_worker():
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 init_db_sync()
-subscribers = get_subscribers_sync()
-logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
+load_subscribers_from_db()
 
 # ========== ЗАПУСК ФОНОВОГО ПОТОКА ==========
 threading.Thread(target=start_worker, daemon=True).start()
