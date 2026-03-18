@@ -42,8 +42,11 @@ if not ADMIN_CHAT_ID:
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
 
 # ========== ФАЙЛЫ ПОДПИСЧИКОВ ==========
-SUBSCRIBERS_FILE = "subscribers.json"
-STATS_FILE = "stats.json"
+SUBSCRIBERS_FILE = os.path.join(os.path.dirname(__file__), "subscribers.json")
+STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.json")
+
+logger.info(f"📁 Путь к файлу подписчиков: {SUBSCRIBERS_FILE}")
+logger.info(f"📊 Путь к файлу статистики: {STATS_FILE}")
 
 # ========== АСИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ФАЙЛАМИ ==========
 async def async_load_subscribers() -> Set[int]:
@@ -76,6 +79,7 @@ async def async_load_stats() -> List[Dict]:
             logger.info(f"📊 Загружено записей статистики: {len(signals)}")
             return signals
     except FileNotFoundError:
+        logger.warning(f"📊 Файл {STATS_FILE} не существует, статистика пуста")
         return []
     except Exception as e:
         logger.error(f"Ошибка загрузки статистики: {e}")
@@ -1130,6 +1134,7 @@ async def send_status(bot, chat_id):
 
 async def send_stats(bot, chat_id):
     summary = stats_manager.get_summary()
+    logger.info(f"📊 Статистика запрошена: всего сигналов = {summary['total']}")  # <-- добавлено
     if summary['total'] == 0:
         await bot.send_message(chat_id, "📊 Статистика пока пуста.")
         return
@@ -1267,6 +1272,7 @@ async def init():
     global subscribers
     subscribers = await async_load_subscribers()
     logger.info(f"👥 Загружено {len(subscribers)} подписчиков из файла")
+    logger.info(f"📊 Загружено {len(stats_manager.signals)} сигналов из stats.json")  # <-- добавлено
 
 asyncio.run(init())
 
