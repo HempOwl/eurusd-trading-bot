@@ -5,17 +5,15 @@ import json
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import aiohttp
-import aiofiles
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 import time
 import pytz
 from typing import List, Dict, Optional, Set, Any
 import threading
 import sqlite3
-import aiosqlite
 import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -49,7 +47,7 @@ api_errors = {}
 API_ERROR_THRESHOLD = 5
 API_ERROR_WINDOW = 60 * 60  # 1 час
 
-# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА (БЕЗ MARKDOWN) ==========
+# ========== ФУНКЦИЯ УВЕДОМЛЕНИЯ АДМИНИСТРАТОРА (без Markdown) ==========
 async def notify_admin(bot: Bot, message: str):
     if ADMIN_CHAT_ID:
         try:
@@ -58,166 +56,181 @@ async def notify_admin(bot: Bot, message: str):
         except Exception as e:
             logger.error(f"❌ Не удалось отправить уведомление админу: {e}")
 
-# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS subscribers (
-                user_id INTEGER PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp INTEGER NOT NULL,
-                symbol TEXT NOT NULL,
-                price REAL NOT NULL,
-                direction TEXT NOT NULL,
-                tp REAL,
-                sl REAL,
-                result TEXT,
-                exit_price REAL,
-                exit_time INTEGER,
-                features TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS candles (
-                symbol TEXT NOT NULL,
-                datetime TEXT NOT NULL,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume REAL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (symbol, datetime)
-            )
-        ''')
-        await db.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
-        await db.execute('CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result) WHERE result IS NULL')
-        await db.commit()
+# ========== СИНХРОННАЯ ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
+def init_db_sync():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS subscribers (
+            user_id INTEGER PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            price REAL NOT NULL,
+            direction TEXT NOT NULL,
+            tp REAL,
+            sl REAL,
+            result TEXT,
+            exit_price REAL,
+            exit_time INTEGER,
+            features TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS candles (
+            symbol TEXT NOT NULL,
+            datetime TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (symbol, datetime)
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result) WHERE result IS NULL')
+    conn.commit()
+    conn.close()
     logger.info("✅ База данных инициализирована")
 
-# ========== РАБОТА С ПОДПИСЧИКАМИ ==========
-async def get_subscribers() -> Set[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('SELECT user_id FROM subscribers') as cursor:
-            rows = await cursor.fetchall()
-            return {row[0] for row in rows}
+# ========== СИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С БД ==========
+def get_subscribers_sync() -> Set[int]:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM subscribers')
+    rows = c.fetchall()
+    conn.close()
+    return {row[0] for row in rows}
 
-async def add_subscriber(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)', (user_id,))
-        await db.commit()
+def add_subscriber_sync(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)', (user_id,))
+    conn.commit()
+    conn.close()
 
-async def remove_subscriber(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('DELETE FROM subscribers WHERE user_id = ?', (user_id,))
-        await db.commit()
+def remove_subscriber_sync(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM subscribers WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
 
-# ========== РАБОТА СО СТАТИСТИКОЙ ==========
-async def add_signal(signal: Dict, features: Optional[List] = None):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            INSERT INTO signals (timestamp, symbol, price, direction, tp, sl, result, exit_price, exit_time, features)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            signal['timestamp'],
-            signal['symbol'],
-            signal['price'],
-            signal['direction'],
-            signal.get('tp'),
-            signal.get('sl'),
-            signal.get('result'),
-            signal.get('exit_price'),
-            signal.get('exit_time'),
-            json.dumps(features) if features else None
-        ))
-        await db.commit()
+def add_signal_sync(signal: Dict, features: Optional[List] = None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO signals (timestamp, symbol, price, direction, tp, sl, result, exit_price, exit_time, features)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        signal['timestamp'],
+        signal['symbol'],
+        signal['price'],
+        signal['direction'],
+        signal.get('tp'),
+        signal.get('sl'),
+        signal.get('result'),
+        signal.get('exit_price'),
+        signal.get('exit_time'),
+        json.dumps(features) if features else None
+    ))
+    conn.commit()
+    conn.close()
 
-async def update_signal_results(symbol: str, current_price: float):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('''
-            SELECT id, timestamp, price, direction, tp, sl
-            FROM signals
-            WHERE symbol = ? AND result IS NULL
-        ''', (symbol,)) as cursor:
-            rows = await cursor.fetchall()
-        now = int(time.time())
-        updated = False
-        for row in rows:
-            signal_id, ts, entry, direction, tp, sl = row
-            if now - ts > 3600:
-                await db.execute('''
-                    UPDATE signals SET result = 'timeout', exit_price = ?, exit_time = ?
+def update_signal_results_sync(symbol: str, current_price: float):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, timestamp, price, direction, tp, sl
+        FROM signals
+        WHERE symbol = ? AND result IS NULL
+    ''', (symbol,))
+    rows = c.fetchall()
+    now = int(time.time())
+    updated = False
+    for row in rows:
+        signal_id, ts, entry, direction, tp, sl = row
+        if now - ts > 3600:
+            c.execute('''
+                UPDATE signals SET result = 'timeout', exit_price = ?, exit_time = ?
+                WHERE id = ?
+            ''', (current_price, now, signal_id))
+            updated = True
+            continue
+        if direction == 'buy':
+            if tp and current_price >= tp:
+                c.execute('''
+                    UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
                     WHERE id = ?
-                ''', (current_price, now, signal_id))
+                ''', (tp, now, signal_id))
                 updated = True
-                continue
-            if direction == 'buy':
-                if tp and current_price >= tp:
-                    await db.execute('''
-                        UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
-                        WHERE id = ?
-                    ''', (tp, now, signal_id))
-                    updated = True
-                elif sl and current_price <= sl:
-                    await db.execute('''
-                        UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
-                        WHERE id = ?
-                    ''', (sl, now, signal_id))
-                    updated = True
-            else:
-                if tp and current_price <= tp:
-                    await db.execute('''
-                        UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
-                        WHERE id = ?
-                    ''', (tp, now, signal_id))
-                    updated = True
-                elif sl and current_price >= sl:
-                    await db.execute('''
-                        UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
-                        WHERE id = ?
-                    ''', (sl, now, signal_id))
-                    updated = True
-        if updated:
-            await db.commit()
-
-async def get_summary(symbol: Optional[str] = None) -> Dict:
-    async with aiosqlite.connect(DB_PATH) as db:
-        base_query = 'SELECT COUNT(*) FROM signals'
-        params = []
-        if symbol:
-            base_query += ' WHERE symbol = ?'
-            params.append(symbol)
-        async with db.execute(base_query, params) as cursor:
-            total = (await cursor.fetchone())[0]
-        if total == 0:
-            return {
-                'total': 0, 'profit': 0, 'loss': 0, 'timeout': 0, 'unknown': 0,
-                'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0,
-                'total_profit_pips': 0, 'total_loss_pips': 0
-            }
-        result_query = '''
-            SELECT 
-                COUNT(*) FILTER (WHERE result = 'profit') as profit,
-                COUNT(*) FILTER (WHERE result = 'loss') as loss,
-                COUNT(*) FILTER (WHERE result = 'timeout') as timeout,
-                COUNT(*) FILTER (WHERE result IS NULL) as unknown
-            FROM signals
-        '''
-        if symbol:
-            result_query += ' WHERE symbol = ?'
-            params_res = [symbol]
+            elif sl and current_price <= sl:
+                c.execute('''
+                    UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
+                    WHERE id = ?
+                ''', (sl, now, signal_id))
+                updated = True
         else:
-            params_res = []
-        async with db.execute(result_query, params_res) as cursor:
-            row = await cursor.fetchone()
-            profit, loss, timeout, unknown = row
-        pips_query = '''
+            if tp and current_price <= tp:
+                c.execute('''
+                    UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
+                    WHERE id = ?
+                ''', (tp, now, signal_id))
+                updated = True
+            elif sl and current_price >= sl:
+                c.execute('''
+                    UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
+                    WHERE id = ?
+                ''', (sl, now, signal_id))
+                updated = True
+    if updated:
+        conn.commit()
+    conn.close()
+
+def get_summary_sync(symbol: Optional[str] = None) -> Dict:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if symbol:
+        c.execute('SELECT COUNT(*) FROM signals WHERE symbol = ?', (symbol,))
+    else:
+        c.execute('SELECT COUNT(*) FROM signals')
+    total = c.fetchone()[0]
+    if total == 0:
+        conn.close()
+        return {
+            'total': 0, 'profit': 0, 'loss': 0, 'timeout': 0, 'unknown': 0,
+            'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0,
+            'total_profit_pips': 0, 'total_loss_pips': 0
+        }
+    if symbol:
+        c.execute('''
+            SELECT 
+                COUNT(*) FILTER (WHERE result = 'profit'),
+                COUNT(*) FILTER (WHERE result = 'loss'),
+                COUNT(*) FILTER (WHERE result = 'timeout'),
+                COUNT(*) FILTER (WHERE result IS NULL)
+            FROM signals WHERE symbol = ?
+        ''', (symbol,))
+    else:
+        c.execute('''
+            SELECT 
+                COUNT(*) FILTER (WHERE result = 'profit'),
+                COUNT(*) FILTER (WHERE result = 'loss'),
+                COUNT(*) FILTER (WHERE result = 'timeout'),
+                COUNT(*) FILTER (WHERE result IS NULL)
+            FROM signals
+        ''')
+    profit, loss, timeout, unknown = c.fetchone()
+    if symbol:
+        c.execute('''
             SELECT 
                 COALESCE(SUM(
                     CASE 
@@ -225,83 +238,100 @@ async def get_summary(symbol: Optional[str] = None) -> Dict:
                         WHEN result = 'profit' AND direction = 'sell' THEN (price - exit_price) * 10000
                         ELSE 0
                     END
-                ), 0) as total_profit_pips,
+                ), 0),
                 COALESCE(SUM(
                     CASE 
                         WHEN result = 'loss' AND direction = 'buy' THEN ABS((exit_price - price) * 10000)
                         WHEN result = 'loss' AND direction = 'sell' THEN ABS((price - exit_price) * 10000)
                         ELSE 0
                     END
-                ), 0) as total_loss_pips
+                ), 0)
+            FROM signals
+            WHERE result IN ('profit', 'loss') AND symbol = ?
+        ''', (symbol,))
+    else:
+        c.execute('''
+            SELECT 
+                COALESCE(SUM(
+                    CASE 
+                        WHEN result = 'profit' AND direction = 'buy' THEN (exit_price - price) * 10000
+                        WHEN result = 'profit' AND direction = 'sell' THEN (price - exit_price) * 10000
+                        ELSE 0
+                    END
+                ), 0),
+                COALESCE(SUM(
+                    CASE 
+                        WHEN result = 'loss' AND direction = 'buy' THEN ABS((exit_price - price) * 10000)
+                        WHEN result = 'loss' AND direction = 'sell' THEN ABS((price - exit_price) * 10000)
+                        ELSE 0
+                    END
+                ), 0)
             FROM signals
             WHERE result IN ('profit', 'loss')
-        '''
-        if symbol:
-            pips_query += ' AND symbol = ?'
-            params_pips = [symbol]
-        else:
-            params_pips = []
-        async with db.execute(pips_query, params_pips) as cursor:
-            row = await cursor.fetchone()
-            total_profit_pips, total_loss_pips = row or (0, 0)
-        win_rate = (profit / (profit + loss) * 100) if (profit + loss) > 0 else 0
-        avg_profit = total_profit_pips / profit if profit > 0 else 0
-        avg_loss = total_loss_pips / loss if loss > 0 else 0
-        return {
-            'total': total,
-            'profit': profit,
-            'loss': loss,
-            'timeout': timeout,
-            'unknown': unknown,
-            'win_rate': win_rate,
-            'avg_profit': avg_profit,
-            'avg_loss': avg_loss,
-            'total_profit_pips': total_profit_pips,
-            'total_loss_pips': total_loss_pips
-        }
+        ''')
+    total_profit_pips, total_loss_pips = c.fetchone()
+    conn.close()
+    win_rate = (profit / (profit + loss) * 100) if (profit + loss) > 0 else 0
+    avg_profit = total_profit_pips / profit if profit > 0 else 0
+    avg_loss = total_loss_pips / loss if loss > 0 else 0
+    return {
+        'total': total,
+        'profit': profit,
+        'loss': loss,
+        'timeout': timeout,
+        'unknown': unknown,
+        'win_rate': win_rate,
+        'avg_profit': avg_profit,
+        'avg_loss': avg_loss,
+        'total_profit_pips': total_profit_pips,
+        'total_loss_pips': total_loss_pips
+    }
 
-# ========== КЭШИРОВАНИЕ СВЕЧЕЙ ==========
-async def get_cached_candles(symbol: str, needed_bars: int = 200) -> Optional[List[Dict]]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute('''
-            SELECT datetime, open, high, low, close, volume
-            FROM candles
-            WHERE symbol = ?
-            ORDER BY datetime DESC
-            LIMIT ?
-        ''', (symbol, needed_bars)) as cursor:
-            rows = await cursor.fetchall()
-            if len(rows) < needed_bars:
-                return None
-            candles = []
-            for row in reversed(rows):
-                dt, o, h, l, c, v = row
-                candles.append({
-                    'datetime': dt,
-                    'open': o,
-                    'high': h,
-                    'low': l,
-                    'close': c,
-                    'volume': v
-                })
-            return candles
+def get_cached_candles_sync(symbol: str, needed_bars: int = 200) -> Optional[List[Dict]]:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT datetime, open, high, low, close, volume
+        FROM candles
+        WHERE symbol = ?
+        ORDER BY datetime DESC
+        LIMIT ?
+    ''', (symbol, needed_bars))
+    rows = c.fetchall()
+    conn.close()
+    if len(rows) < needed_bars:
+        return None
+    candles = []
+    for row in reversed(rows):
+        dt, o, h, l, c_val, v = row
+        candles.append({
+            'datetime': dt,
+            'open': o,
+            'high': h,
+            'low': l,
+            'close': c_val,
+            'volume': v
+        })
+    return candles
 
-async def save_candles_to_cache(symbol: str, candles: List[Dict]):
-    async with aiosqlite.connect(DB_PATH) as db:
-        for c in candles:
-            await db.execute('''
-                INSERT OR REPLACE INTO candles (symbol, datetime, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                symbol,
-                c['datetime'],
-                c['open'],
-                c['high'],
-                c['low'],
-                c['close'],
-                c.get('volume', 0)
-            ))
-        await db.commit()
+def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for candle in candles:
+        c.execute('''
+            INSERT OR REPLACE INTO candles (symbol, datetime, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            symbol,
+            candle['datetime'],
+            candle['open'],
+            candle['high'],
+            candle['low'],
+            candle['close'],
+            candle.get('volume', 0)
+        ))
+    conn.commit()
+    conn.close()
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
@@ -774,10 +804,10 @@ def calculate_normalized_score(ind):
     normalized = (score / max_score) * 100 if max_score > 0 else 0
     return normalized
 
-# ========== ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ TWELVE DATA С КЭШИРОВАНИЕМ ==========
+# ========== ЗАГРУЗКА ДАННЫХ ЧЕРЕЗ TWELVE DATA ==========
 async def fetch_candles(symbol: str, api_key: str, bars: int = 50) -> Optional[List[Dict]]:
     global api_errors
-    cached = await get_cached_candles(symbol, bars)
+    cached = await asyncio.to_thread(get_cached_candles_sync, symbol, bars)
     if cached:
         return cached
     url = "https://api.twelvedata.com/time_series"
@@ -791,7 +821,7 @@ async def fetch_candles(symbol: str, api_key: str, bars: int = 50) -> Optional[L
                     if values is None:
                         logger.error(f"Twelve Data error: {data}")
                         return None
-                    await save_candles_to_cache(symbol, values)
+                    await asyncio.to_thread(save_candles_to_cache_sync, symbol, values)
                     return values
                 else:
                     error_text = await resp.text()
@@ -850,7 +880,6 @@ async def update_prices(symbol: str) -> bool:
         return True
     return False
 
-# ========== ПОЛУЧЕНИЕ ИНДИКАТОРОВ ==========
 async def get_indicators(symbol: str) -> Optional[Dict]:
     storage = price_storages.get(symbol)
     if not storage:
@@ -873,8 +902,7 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
             ind['change_3min'] = change_3min
             ind['change_3min_pct'] = (change_3min / price_3min_ago) * 100
         else:
-            ind['change_3min'] = 0
-            ind['change_3min_pct'] = 0
+            ind['change_3min'] = 0; ind['change_3min_pct'] = 0
         ind['rsi'] = rsi(c, 14)
         if ind['rsi'] > 70:
             ind['rsi_signal'] = 'ПЕРЕКУПЛЕННОСТЬ (сигнал к продаже)'
@@ -1028,7 +1056,7 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+# ========== ОБРАБОТЧИКИ ==========
 @app.before_request
 def before_request():
     try:
@@ -1082,7 +1110,6 @@ async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
     try:
-        # Сначала отвечаем на callback, чтобы избежать таймаута
         await bot.answer_callback_query(cb_id)
         if cb == 'status':
             await send_status(bot, chat_id)
@@ -1108,7 +1135,7 @@ async def handle_callback(chat_id, cb, cb_id):
 
 async def process_auto_on(bot: Bot, chat_id: int):
     async with subscribers_lock:
-        await add_subscriber(chat_id)
+        await asyncio.to_thread(add_subscriber_sync, chat_id)
         subscribers.add(chat_id)
     await bot.send_message(chat_id, "✅ Автосигналы включены")
     logger.info(f"✅ Подписчик {chat_id} добавлен")
@@ -1116,7 +1143,7 @@ async def process_auto_on(bot: Bot, chat_id: int):
 async def process_auto_off(bot: Bot, chat_id: int):
     async with subscribers_lock:
         if chat_id in subscribers:
-            await remove_subscriber(chat_id)
+            await asyncio.to_thread(remove_subscriber_sync, chat_id)
             subscribers.remove(chat_id)
             await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
             logger.info(f"⏹️ Подписчик {chat_id} удалён")
@@ -1134,7 +1161,7 @@ async def handle_message(chat_id, text):
     elif text == '/stop':
         async with subscribers_lock:
             if chat_id in subscribers:
-                await remove_subscriber(chat_id)
+                await asyncio.to_thread(remove_subscriber_sync, chat_id)
                 subscribers.remove(chat_id)
                 await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
             else:
@@ -1148,7 +1175,7 @@ async def send_status(bot, chat_id):
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
 
 async def send_stats(bot, chat_id):
-    summary = await get_summary()
+    summary = await asyncio.to_thread(get_summary_sync)
     logger.info(f"📊 Статистика запрошена: всего сигналов = {summary['total']}")
     if summary['total'] == 0:
         await bot.send_message(chat_id, "📊 Статистика пока пуста.")
@@ -1170,7 +1197,7 @@ async def send_stats(bot, chat_id):
 """
     await bot.send_message(chat_id, text, parse_mode='Markdown')
 
-# ========== ФОНОВЫЙ ПОТОК АВТОРАССЫЛКИ ==========
+# ========== ФОНОВЫЙ ПОТОК ==========
 async def auto_worker():
     logger.info("🚀 Автосигналы запущены")
     if ADMIN_CHAT_ID:
@@ -1182,7 +1209,7 @@ async def auto_worker():
     while True:
         try:
             await asyncio.sleep(600)  # 10 минут
-            subs = await get_subscribers()
+            subs = await asyncio.to_thread(get_subscribers_sync)
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
                 continue
@@ -1193,7 +1220,7 @@ async def auto_worker():
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
                         logger.info(f"✅ {symbol}: новая свеча {new_candle.get('datetime')} = {current_price}")
-                        await update_signal_results(symbol, current_price)
+                        await asyncio.to_thread(update_signal_results_sync, symbol, current_price)
                     else:
                         logger.warning(f"⚠️ {symbol}: не удалось получить свечу")
                     for uid in subs:
@@ -1228,7 +1255,7 @@ async def auto_worker():
                                     'exit_time': None
                                 }
                                 features = ml_gen.prepare_features(ind)
-                                await add_signal(signal_record, features)
+                                await asyncio.to_thread(add_signal_sync, signal_record, features)
                                 await bot.send_message(uid, generate_message(ind, symbol, warning), parse_mode='Markdown')
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
                             else:
@@ -1257,17 +1284,18 @@ async def auto_worker():
                 pass
             await asyncio.sleep(10)
 
-# ========== ИНИЦИАЛИЗАЦИЯ ПРИ ЗАПУСКЕ ==========
-async def init():
-    await init_db()
-    global subscribers
-    subscribers = await get_subscribers()
-    logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
+def start_worker():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(auto_worker())
 
-asyncio.run(init())
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
+init_db_sync()
+subscribers = get_subscribers_sync()
+logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
 
 # ========== ЗАПУСК ФОНОВОГО ПОТОКА ==========
-threading.Thread(target=lambda: asyncio.run(auto_worker()), daemon=True).start()
+threading.Thread(target=start_worker, daemon=True).start()
 logger.info("✅ Фоновый поток запущен")
 
 # ========== ЗАПУСК FLASK ==========
