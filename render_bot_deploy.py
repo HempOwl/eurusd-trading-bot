@@ -110,19 +110,25 @@ def get_subscribers_sync() -> Set[int]:
     conn.close()
     return {row[0] for row in rows}
 
-def add_subscriber_sync(user_id: int):
+def add_subscriber_sync(user_id: int) -> bool:
+    """Возвращает True, если подписчик был добавлен (не существовал ранее)."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)', (user_id,))
+    added = c.rowcount > 0
     conn.commit()
     conn.close()
+    return added
 
-def remove_subscriber_sync(user_id: int):
+def remove_subscriber_sync(user_id: int) -> bool:
+    """Возвращает True, если подписчик был удалён (существовал ранее)."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM subscribers WHERE user_id = ?', (user_id,))
+    removed = c.rowcount > 0
     conn.commit()
     conn.close()
+    return removed
 
 def add_signal_sync(signal: Dict, features: Optional[List] = None):
     conn = sqlite3.connect(DB_PATH)
@@ -337,23 +343,6 @@ def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
 subscribers = set()
 subscribers_lock = threading.Lock()
 
-# ========== СИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ПОДПИСЧИКАМИ В ПАМЯТИ ==========
-def add_subscriber_mem(user_id: int):
-    global subscribers
-    with subscribers_lock:
-        add_subscriber_sync(user_id)
-        subscribers.add(user_id)
-
-def remove_subscriber_mem(user_id: int):
-    global subscribers
-    with subscribers_lock:
-        remove_subscriber_sync(user_id)
-        subscribers.discard(user_id)
-
-def get_subscriber_status_mem(user_id: int) -> bool:
-    with subscribers_lock:
-        return user_id in subscribers
-
 def load_subscribers_from_db():
     global subscribers
     db_subs = get_subscribers_sync()
@@ -361,6 +350,26 @@ def load_subscribers_from_db():
         subscribers.clear()
         subscribers.update(db_subs)
     logger.info(f"👥 Загружено {len(subscribers)} подписчиков из БД")
+
+def is_subscriber(user_id: int) -> bool:
+    with subscribers_lock:
+        return user_id in subscribers
+
+def add_subscriber_mem(user_id: int) -> bool:
+    """Добавляет подписчика в БД и память, возвращает True если добавлен (не был ранее)."""
+    added = add_subscriber_sync(user_id)
+    if added:
+        with subscribers_lock:
+            subscribers.add(user_id)
+    return added
+
+def remove_subscriber_mem(user_id: int) -> bool:
+    """Удаляет подписчика из БД и памяти, возвращает True если был удалён (существовал)."""
+    removed = remove_subscriber_sync(user_id)
+    if removed:
+        with subscribers_lock:
+            subscribers.discard(user_id)
+    return removed
 
 # ========== КЛАСС ДЛЯ МАШИННОГО ОБУЧЕНИЯ ==========
 class MLSignalGenerator:
@@ -1138,47 +1147,43 @@ async def handle_callback(chat_id, cb, cb_id):
     logger.info(f"🔥 Callback received: {cb} from {chat_id}")
     bot = Bot(token=BOT_TOKEN)
     try:
-        # Мягкий ответ на callback – если не успели, ничего страшного
+        # Пытаемся ответить на callback (если не успеем – не страшно)
         try:
             await bot.answer_callback_query(cb_id)
         except Exception as e:
-            logger.warning(f"Не удалось ответить на callback (возможно, устарел): {e}")
+            logger.warning(f"Не удалось ответить на callback: {e}")
 
         if cb == 'status':
             await send_status(bot, chat_id)
         elif cb == 'stats':
             await send_stats(bot, chat_id)
         elif cb == 'auto_on':
-            asyncio.create_task(process_auto_on(bot, chat_id))
+            # Выполняем синхронно в потоке и ждём результат
+            added = await asyncio.to_thread(add_subscriber_mem, chat_id)
+            if added:
+                await bot.send_message(chat_id, "✅ Автосигналы включены")
+                logger.info(f"✅ Подписчик {chat_id} добавлен")
+            else:
+                await bot.send_message(chat_id, "ℹ️ Автосигналы уже были включены")
         elif cb == 'auto_off':
-            asyncio.create_task(process_auto_off(bot, chat_id))
+            removed = await asyncio.to_thread(remove_subscriber_mem, chat_id)
+            if removed:
+                await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+                logger.info(f"⏹️ Подписчик {chat_id} удалён")
+            else:
+                await bot.send_message(chat_id, "ℹ️ Автосигналы не были включены")
         elif cb == 'back':
             await bot.send_message(chat_id, "Главное меню", reply_markup=main_menu())
         else:
-            await bot.send_message(chat_id, "❓ Неизвестная команда или устаревшая кнопка")
+            await bot.send_message(chat_id, "❓ Неизвестная команда")
             logger.warning(f"Unknown callback: {cb} from {chat_id}")
     except Exception as e:
         logger.error(f"Error in handle_callback: {e}")
         try:
-            await bot.send_message(chat_id, "⚠️ Внутренняя ошибка при обработке запроса")
-            await notify_admin(bot, f"❌ Ошибка в handle_callback для {chat_id}: {e}")
+            await bot.send_message(chat_id, "⚠️ Внутренняя ошибка")
+            await notify_admin(bot, f"Ошибка в handle_callback: {e}")
         except:
             pass
-
-async def process_auto_on(bot: Bot, chat_id: int):
-    # Проверим, не подписан ли уже
-    if await asyncio.to_thread(get_subscriber_status_mem, chat_id):
-        await bot.send_message(chat_id, "ℹ️ Автосигналы уже включены")
-        return
-    await asyncio.to_thread(add_subscriber_mem, chat_id)
-    await bot.send_message(chat_id, "✅ Автосигналы включены")
-    logger.info(f"✅ Подписчик {chat_id} добавлен")
-
-async def process_auto_off(bot: Bot, chat_id: int):
-    # Выполняем синхронную операцию в потоке
-    await asyncio.to_thread(remove_subscriber_mem, chat_id)
-    await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
-    logger.info(f"⏹️ Подписчик {chat_id} удалён")
 
 async def handle_message(chat_id, text):
     bot = Bot(token=BOT_TOKEN)
@@ -1189,14 +1194,17 @@ async def handle_message(chat_id, text):
     elif text == '/stats':
         await send_stats(bot, chat_id)
     elif text == '/stop':
-        await asyncio.to_thread(remove_subscriber_mem, chat_id)
-        await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+        removed = await asyncio.to_thread(remove_subscriber_mem, chat_id)
+        if removed:
+            await bot.send_message(chat_id, "⏹️ Автосигналы остановлены")
+        else:
+            await bot.send_message(chat_id, "ℹ️ Автосигналы не были включены")
     else:
         await bot.send_message(chat_id, "❌ Неизвестная команда")
 
 async def send_status(bot, chat_id):
-    # Получаем статус через синхронную функцию в потоке
-    auto = "вкл" if await asyncio.to_thread(get_subscriber_status_mem, chat_id) else "выкл"
+    is_sub = await asyncio.to_thread(is_subscriber, chat_id)
+    auto = "вкл" if is_sub else "выкл"
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
 
 async def send_stats(bot, chat_id):
