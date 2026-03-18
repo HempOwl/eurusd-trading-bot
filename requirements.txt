@@ -14,3 +14,5 @@ requests
 pytz
 asyncpg
 aiofiles
+aiosqlite
+joblib
