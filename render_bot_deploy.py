@@ -682,14 +682,18 @@ class MLSignalGenerator:
         if self.model is None:
             return 0.5
         try:
-            if not hasattr(self.model, 'predict_proba'):
-                return 0.5
+            # Для XGBoost проверяем, есть ли обученный бустер
+            if self.model_type == 'xgb':
+                _ = self.model.get_booster()
+            else:
+                if not hasattr(self.model, 'estimators_'):
+                    return 0.5
             features = self.prepare_features(ind)
             X = np.array(features).reshape(1, -1)
             proba = self.model.predict_proba(X)[0]
             return proba[1] if len(proba) > 1 else proba[0]
-        except Exception as e:
-            logger.warning(f"ML prediction error: {e}")
+        except Exception:
+            # Молча возвращаем 0.5, не засоряя логи
             return 0.5
 
     def train(self, X: List[List[float]], y: List[int]):
