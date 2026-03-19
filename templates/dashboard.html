@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradeScope – панель статистики</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0B0F1E;
+            color: #E0E7FF;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            padding: 30px 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            background: linear-gradient(135deg, #7FDBFF, #00A8E8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 3em;
+            font-weight: 700;
+            margin-bottom: 30px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        h2 {
+            color: #B0E0FF;
+            font-size: 2em;
+            margin: 40px 0 20px;
+            border-left: 4px solid #00A8E8;
+            padding-left: 15px;
+        }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .card {
+            background: rgba(15, 30, 45, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid #2E5070;
+            border-radius: 24px;
+            padding: 25px 20px;
+            text-align: center;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            transition: transform 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            border-color: #00A8E8;
+            box-shadow: 0 15px 25px #00A8E844;
+        }
+        .card .label {
+            font-size: 0.9rem;
+            color: #9FD9FF;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        .card .value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #00E0FF;
+            line-height: 1.2;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #0F1A2A;
+            border-radius: 20px;
+            overflow: hidden;
+            margin: 25px 0;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.6);
+        }
+        th {
+            background: #1E2F40;
+            color: #C0F0FF;
+            font-weight: 600;
+            padding: 14px 12px;
+            text-align: left;
+            font-size: 0.95rem;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #2A4A70;
+            color: #D0E0F0;
+        }
+        tr:hover td {
+            background: #1E3450;
+        }
+        .profit { color: #88FF88; font-weight: 600; }
+        .loss { color: #FF8888; font-weight: 600; }
+        .timeout { color: #FFAA33; font-weight: 600; }
+        .positive { color: #88FF88; }
+        .negative { color: #FF8888; }
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            color: #4A6A88;
+            font-size: 0.9rem;
+        }
+        @media (max-width: 600px) {
+            h1 { font-size: 2em; }
+            .card .value { font-size: 1.8rem; }
+            th, td { padding: 8px; font-size: 0.8rem; }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 TradeScope Analytics</h1>
+        
+        <!-- Карточки с общей статистикой -->
+        <div class="cards" id="summary">
+            <div class="card"><div class="label">Всего сигналов</div><div class="value" id="total">0</div></div>
+            <div class="card"><div class="label">Прибыльных</div><div class="value" id="profit">0</div></div>
+            <div class="card"><div class="label">Убыточных</div><div class="value" id="loss">0</div></div>
+            <div class="card"><div class="label">Винрейт</div><div class="value" id="winrate">0%</div></div>
+            <div class="card"><div class="label">Чистый PnL</div><div class="value" id="pnl">0</div></div>
+        </div>
+
+        <!-- Таблица по валютным парам -->
+        <h2>📈 По валютным парам</h2>
+        <table id="pairs-table">
+            <thead>
+                <tr><th>Пара</th><th>Всего</th><th>✅ Прибыль</th><th>❌ Убыток</th><th>⏳ Тайм-аут</th><th>Винрейт</th><th>Чистый PnL</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+
+        <!-- Таблица последних сигналов -->
+        <h2>🕒 Последние сигналы</h2>
+        <table id="recent-table">
+            <thead>
+                <tr><th>Время</th><th>Пара</th><th>Направление</th><th>Цена входа</th><th>Результат</th><th>Прибыль (пипсы)</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        
+        <div class="footer">TradeScope v3.0 – данные обновляются каждые 30 секунд</div>
+    </div>
+
+    <script>
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats');
+                if (!res.ok) throw new Error('Ошибка загрузки');
+                const data = await res.json();
+
+                // Общая статистика
+                const s = data.summary;
+                document.getElementById('total').innerText = s.total;
+                document.getElementById('profit').innerText = s.profit;
+                document.getElementById('loss').innerText = s.loss;
+                document.getElementById('winrate').innerText = s.win_rate.toFixed(1) + '%';
+                const pnl = (s.total_profit_pips - s.total_loss_pips).toFixed(1);
+                document.getElementById('pnl').innerHTML = pnl;
+                document.getElementById('pnl').style.color = (s.total_profit_pips - s.total_loss_pips) >= 0 ? '#88FF88' : '#FF8888';
+
+                // Статистика по парам
+                const pairsTbody = document.querySelector('#pairs-table tbody');
+                pairsTbody.innerHTML = '';
+                for (const [symbol, ps] of Object.entries(data.pairs)) {
+                    const row = pairsTbody.insertRow();
+                    const winRate = (ps.profit + ps.loss) > 0 ? (ps.profit / (ps.profit + ps.loss) * 100).toFixed(1) : 0;
+                    const pairPnl = (ps.total_profit_pips - ps.total_loss_pips).toFixed(1);
+                    const pnlClass = (ps.total_profit_pips - ps.total_loss_pips) >= 0 ? 'positive' : 'negative';
+                    row.innerHTML = `<td><strong>${symbol}</strong></td><td>${ps.total}</td><td>${ps.profit}</td><td>${ps.loss}</td><td>${ps.timeout}</td><td>${winRate}%</td><td class="${pnlClass}">${pairPnl}</td>`;
+                }
+
+                // Последние сигналы
+                const recentTbody = document.querySelector('#recent-table tbody');
+                recentTbody.innerHTML = '';
+                data.recent.forEach(sig => {
+                    const row = recentTbody.insertRow();
+                    const time = new Date(sig.timestamp * 1000).toLocaleString('ru-RU', { 
+                        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' 
+                    });
+                    const resultClass = sig.result === 'profit' ? 'profit' : (sig.result === 'loss' ? 'loss' : 'timeout');
+                    const resultText = sig.result === 'profit' ? '✅' : (sig.result === 'loss' ? '❌' : '⏳');
+                    const pips = sig.pips !== null ? sig.pips.toFixed(1) : '-';
+                    row.innerHTML = `<td>${time}</td><td>${sig.symbol}</td><td>${sig.direction}</td><td>${sig.price?.toFixed(5) ?? '-'}</td><td class="${resultClass}">${resultText}</td><td>${pips}</td>`;
+                });
+            } catch (e) {
+                console.error('Ошибка загрузки статистики:', e);
+            }
+        }
+
+        // Загрузить сразу и затем каждые 30 секунд
+        loadStats();
+        setInterval(loadStats, 30000);
+    </script>
+</body>
+</html>

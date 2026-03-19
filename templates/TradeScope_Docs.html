@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>TradeScope – документация</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: linear-gradient(145deg, #0B0F1E 0%, #1A2335 100%);
+            color: #E0E7FF;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            line-height: 1.6;
+            padding: 40px 20px;
+            min-height: 100vh;
+        }
+        .document {
+            max-width: 1300px;
+            margin: 0 auto;
+            background: rgba(10, 20, 30, 0.8);
+            backdrop-filter: blur(12px);
+            border-radius: 40px;
+            padding: 50px;
+            box-shadow: 0 30px 50px rgba(0, 180, 255, 0.2), inset 0 0 0 1px rgba(0, 200, 255, 0.3);
+            border: 1px solid rgba(0, 200, 255, 0.4);
+        }
+        h1 {
+            font-size: 4.5em;
+            font-weight: 800;
+            background: linear-gradient(135deg, #7FDBFF, #00A8E8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+            letter-spacing: -1px;
+            text-shadow: 0 0 30px #00A8E8;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        h1 span {
+            background: rgba(0, 168, 232, 0.2);
+            padding: 8px 20px;
+            border-radius: 60px;
+            font-size: 0.35em;
+            font-weight: 500;
+            color: #AADDFF;
+            border: 1px solid #00A8E8;
+            letter-spacing: 1px;
+        }
+        .subtitle {
+            font-size: 1.5em;
+            color: #B0E0FF;
+            margin-bottom: 40px;
+            border-left: 6px solid #00A8E8;
+            padding-left: 25px;
+            background: linear-gradient(90deg, rgba(0,168,232,0.15), transparent);
+            border-radius: 0 100px 100px 0;
+        }
+        h2 {
+            font-size: 2.5em;
+            margin: 60px 0 25px 0;
+            font-weight: 600;
+            background: linear-gradient(135deg, #9FD9FF, #6BB5FF);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            border-bottom: 2px solid #00A8E8;
+            padding-bottom: 12px;
+            display: inline-block;
+        }
+        h3 {
+            font-size: 1.8em;
+            color: #B0E0FF;
+            margin: 40px 0 20px 0;
+            font-weight: 500;
+        }
+        .chip-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin: 20px 0 30px;
+        }
+        .chip {
+            background: linear-gradient(145deg, #1F2A44, #121B2F);
+            padding: 10px 22px;
+            border-radius: 40px;
+            font-weight: 500;
+            border: 1px solid #2F4B70;
+            box-shadow: 0 5px 10px rgba(0,0,0,0.3);
+            color: #C0E0FF;
+            transition: 0.2s;
+        }
+        .chip:hover {
+            border-color: #00A8E8;
+            box-shadow: 0 0 15px #00A8E8;
+            transform: scale(1.02);
+        }
+        .chip-green {
+            background: linear-gradient(145deg, #1E4A3A, #0E2A20);
+            border-color: #00CC88;
+            color: #CCFFDD;
+        }
+        .chip-blue {
+            background: linear-gradient(145deg, #1A3F5A, #0D2635);
+            border-color: #3399FF;
+        }
+        .chip-gold {
+            background: linear-gradient(145deg, #5A4A1A, #2A200E);
+            border-color: #FFAA33;
+            color: #FFE5AA;
+        }
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 10px;
+            margin: 30px 0;
+        }
+        th {
+            background: #1E2F40;
+            color: #C0F0FF;
+            font-weight: 600;
+            padding: 16px 20px;
+            text-align: left;
+            border-radius: 20px 20px 0 0;
+            font-size: 1.1em;
+            border-bottom: 3px solid #00A8E8;
+        }
+        td {
+            background: rgba(20, 40, 60, 0.7);
+            padding: 16px 20px;
+            border-radius: 16px;
+            backdrop-filter: blur(4px);
+            border: 1px solid #2A4A70;
+            transition: 0.2s;
+        }
+        tr:hover td {
+            background: #1E3450;
+            border-color: #00A8E8;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 25px;
+            margin: 30px 0;
+        }
+        .feature-card {
+            background: rgba(10, 25, 45, 0.8);
+            backdrop-filter: blur(8px);
+            border-radius: 30px;
+            padding: 25px;
+            border: 1px solid #2E5070;
+            transition: 0.3s;
+            box-shadow: 0 15px 25px -10px black;
+        }
+        .feature-card:hover {
+            border-color: #00A8E8;
+            transform: translateY(-6px);
+            box-shadow: 0 20px 30px -5px #00A8E8;
+        }
+        .feature-card h4 {
+            font-size: 1.7em;
+            color: #9FD9FF;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .code-block {
+            background: #0C1A28;
+            border: 1px solid #2A5A8A;
+            border-radius: 24px;
+            padding: 22px;
+            font-family: 'Fira Code', monospace;
+            color: #BBFFBB;
+            box-shadow: inset 0 0 20px black;
+            margin: 20px 0;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .badge-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .big-badge {
+            padding: 12px 28px;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 1.1em;
+            background: #1A2E44;
+            border: 2px solid #3A6E9A;
+            color: #E0F0FF;
+        }
+        hr {
+            border: none;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #00A8E8, #7FDBFF, #00A8E8, transparent);
+            margin: 60px 0;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 80px;
+            color: #7FA0C0;
+            font-size: 1.1em;
+            border-top: 1px dashed #2F5F8F;
+            padding-top: 30px;
+        }
+        .emoji-big {
+            font-size: 2.2rem;
+            vertical-align: middle;
+        }
+        .indicator-value {
+            font-family: 'Fira Code', monospace;
+            background: #0F1A24;
+            padding: 2px 8px;
+            border-radius: 8px;
+            color: #FFD966;
+        }
+    </style>
+</head>
+<body>
+<div class="document">
+    <h1>
+        🔭 TradeScope 
+        <span>v3.0</span>
+    </h1>
+    <div class="subtitle">
+        ⚡ интеллектуальный сканер валютного рынка с ML-коррекцией
+    </div>
+
+    <!-- Бейджи с основными характеристиками -->
+    <div class="badge-container">
+        <span class="big-badge">📈 5 валютных пар</span>
+        <span class="big-badge">🧠 XGBoost</span>
+        <span class="big-badge">📆 эконом. календарь</span>
+        <span class="big-badge">📊 статистика</span>
+        <span class="big-badge">🔔 уведомления</span>
+        <span class="big-badge">⚡ автосигналы</span>
+    </div>
+
+    <h2>🌟 Общая концепция</h2>
+    <p style="font-size: 1.3rem; background: #0E1F2F; padding: 25px; border-radius: 30px;">
+        <strong>TradeScope</strong> — это Telegram-бот, объединяющий классический технический анализ,
+        машинное обучение и фундаментальные данные для генерации качественных торговых сигналов.
+        Создан для трейдеров, которые ценят точность, автоматизацию и прозрачность.
+    </p>
+
+    <h2>🚀 Ключевые возможности</h2>
+    <div class="feature-grid">
+        <div class="feature-card">
+            <h4>🌍 Мультивалютность</h4>
+            <p>EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD – одновременный анализ 5 основных пар.</p>
+        </div>
+        <div class="feature-card">
+            <h4>📊 15+ индикаторов</h4>
+            <p>RSI, MACD, Bollinger Bands, SMA, EMA, ATR, OBV, ADX, Stochastic, поддержки/сопротивления, ложные пробои.</p>
+        </div>
+        <div class="feature-card">
+            <h4>📆 Эконом. календарь</h4>
+            <p>Автоматическая проверка важных новостей (High/Medium) и предупреждение в сигналах. Источник: Finnworlds (бесплатный).</p>
+        </div>
+        <div class="feature-card">
+            <h4>🧠 ML (XGBoost)</h4>
+            <p>Модель, обучаемая на исторических данных, корректирует уверенность сигнала.</p>
+        </div>
+        <div class="feature-card">
+            <h4>📈 5‑мин тренд</h4>
+            <p>Фильтр по старшему таймфрейму – ослабление сигналов против тренда.</p>
+        </div>
+        <div class="feature-card">
+            <h4>💰 Учёт спреда</h4>
+            <p>TP/SL рассчитываются с учётом реального спреда (источник – Twelve Data).</p>
+        </div>
+        <div class="feature-card">
+            <h4>📊 Статистика</h4>
+            <p>Общая и по каждой паре, винрейт, средний профит/лосс, PnL.</p>
+        </div>
+        <div class="feature-card">
+            <h4>🔔 Уведомления</h4>
+            <p>О закрытии сделки (прибыль/убыток) – приходят каждому подписчику.</p>
+        </div>
+    </div>
+
+    <h2>📈 Индикаторы и их значения</h2>
+    <p>Ниже приведены основные индикаторы, используемые ботом, с примерами их типичных значений и интерпретации.</p>
+    <table>
+        <tr><th>Индикатор</th><th>Типичное значение</th><th>Интерпретация</th></tr>
+        <tr><td>RSI</td><td><span class="indicator-value">45.2</span></td><td>Ниже 30 – перепроданность, выше 70 – перекупленность</td></tr>
+        <tr><td>MACD</td><td><span class="indicator-value">0.00015</span></td><td>Выше нуля – бычий сигнал, ниже – медвежий</td></tr>
+        <tr><td>Bollinger Bands (верх)</td><td><span class="indicator-value">1.1245</span></td><td>Цена у верхней полосы – возможен откат</td></tr>
+        <tr><td>Bollinger Bands (низ)</td><td><span class="indicator-value">1.1190</span></td><td>Цена у нижней полосы – возможен отскок</td></tr>
+        <tr><td>SMA(5)</td><td><span class="indicator-value">1.1210</span></td><td>Краткосрочная скользящая средняя</td></tr>
+        <tr><td>SMA(20)</td><td><span class="indicator-value">1.1205</span></td><td>Среднесрочная скользящая средняя</td></tr>
+        <tr><td>EMA(5)</td><td><span class="indicator-value">1.1212</span></td><td>Более чувствительная к последним ценам</td></tr>
+        <tr><td>ATR</td><td><span class="indicator-value">0.0023</span></td><td>Волатильность (в абсолютных величинах)</td></tr>
+        <tr><td>OBV</td><td><span class="indicator-value">1.5M</span></td><td>Растущий OBV подтверждает восходящий тренд</td></tr>
+        <tr><td>ADX</td><td><span class="indicator-value">32</span></td><td>Выше 25 – сильный тренд</td></tr>
+        <tr><td>Stochastic %K</td><td><span class="indicator-value">80</span></td><td>Выше 80 – перекупленность, ниже 20 – перепроданность</td></tr>
+        <tr><td>Поддержка S1</td><td><span class="indicator-value">1.1180</span></td><td>Ближайший уровень поддержки</td></tr>
+        <tr><td>Сопротивление R1</td><td><span class="indicator-value">1.1230</span></td><td>Ближайший уровень сопротивления</td></tr>
+        <tr><td>5‑мин тренд</td><td><span class="indicator-value">up</span></td><td>Направление тренда (up/down/neutral)</td></tr>
+    </table>
+
+    <h2>📊 Пример сигнала</h2>
+    <div class="code-block">
+🟢 *АНАЛИЗ EUR/USD*
+
+📊 *ОБЩАЯ ВЕРОЯТНОСТЬ*
+┌─ ⬆️ ВВЕРХ: 72.5%
+└─ ⬇️ ВНИЗ: 27.5%
+🎯 Уверенность: 45.0%
+💡 Рекомендация: 📈 ПОКУПКА
+
+📊 *ATR*: 0.012%
+🤖 *ML вероятность*: 68.3%
+📈 *ADX*: 32.1 (DI+:28.4 DI-:15.2)
+📊 *Stochastic*: %K=82.1 %D=79.3
+📊 *3 мин изменение*: ⬆️ 0.023%
+
+⚠️ *ВНИМАНИЕ:* Через 5 минут решение по ставке ФРС
+
+#EURUSD
+    </div>
+
+    <h2>🧠 Машинное обучение</h2>
+    <div class="code-block">
+        • Модель: XGBoost (RandomForest как резервная)<br>
+        • Признаки: все индикаторы + час, день недели, норм. объём<br>
+        • Обучение: раз в сутки (минимум 100 сделок)<br>
+        • Метрики: accuracy, precision, recall, F1 – команда /model_stats<br>
+        • Влияние: вес ML‑предсказания 30%<br><br>
+        confidence = technical_score * 0.7 + ml_probability * 30
+    </div>
+
+    <h2>📅 Экономический календарь</h2>
+    <p><span class="chip">Finnworlds (бесплатно)</span> – автоматическая проверка важных событий (High/Medium). При наличии новости за 10 минут до её выхода в сигнал добавляется предупреждение.</p>
+
+    <h2>🔔 Уведомления о результатах сделок</h2>
+    <p>После закрытия сигнала (TP/SL/timeout) подписчик получает:</p>
+    <div class="code-block" style="background: #1A2F3F;">
+        ✅ Сигнал #1245 закрыт<br>
+        Результат: profit<br>
+        Цена выхода: 1.12345<br>
+        Прибыль: 15.2 пипсов
+    </div>
+
+    <h2>📋 Команды Telegram</h2>
+    <table>
+        <tr><th>Команда</th><th>Описание</th></tr>
+        <tr><td>/start</td><td>Главное меню</td></tr>
+        <tr><td>/status</td><td>Статус подписки + список пар</td></tr>
+        <tr><td>/stats</td><td>Общая статистика</td></tr>
+        <tr><td>/stop</td><td>Отключить автосигналы</td></tr>
+        <tr><td>/model_stats</td><td>Метрики ML‑модели</td></tr>
+    </table>
+
+    <h2>⚙️ Технические детали</h2>
+    <ul style="font-size: 1.2rem; columns: 2;">
+        <li>🐍 Python 3.11</li>
+        <li>🗄️ SQLite (bot.db)</li>
+        <li>📦 flask + python-telegram-bot</li>
+        <li>🧪 scikit‑learn, xgboost</li>
+        <li>🔁 asyncio + threading</li>
+        <li>📡 Twelve Data API</li>
+        <li>🌐 Finnworlds API</li>
+    </ul>
+
+    <hr>
+    <div class="footer">
+        ✦ TradeScope v3.0 – март 2026 ✦<br>
+        создан для прибыльной и осознанной торговли
+    </div>
+</div>
+</body>
+</html>

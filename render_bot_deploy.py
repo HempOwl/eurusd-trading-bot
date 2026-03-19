@@ -3,7 +3,7 @@ import logging
 import os
 import json
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, Response
 import aiohttp
 import time
 import pytz
@@ -17,6 +17,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from functools import wraps
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -38,6 +39,8 @@ if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 if not ADMIN_CHAT_ID:
     logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
+if not DASHBOARD_PASSWORD:
+    logger.warning("⚠️ DASHBOARD_PASSWORD не задан. Веб-панель будет доступна без пароля!")
 
 # ========== ОСНОВНЫЕ ВАЛЮТНЫЕ ПАРЫ (5 шт) ==========
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
@@ -114,7 +117,6 @@ def init_db_sync():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Новая таблица для связи сигналов с получателями
     c.execute('''
         CREATE TABLE IF NOT EXISTS signal_recipients (
             signal_id INTEGER,
@@ -122,7 +124,6 @@ def init_db_sync():
             PRIMARY KEY (signal_id, user_id)
         )
     ''')
-    # Новая таблица для уведомлений о закрытых сделках
     c.execute('''
         CREATE TABLE IF NOT EXISTS pending_notifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,7 +135,6 @@ def init_db_sync():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Новая таблица для хранения метрик модели
     c.execute('''
         CREATE TABLE IF NOT EXISTS model_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,7 +180,6 @@ def remove_subscriber_sync(user_id: int) -> bool:
     return removed
 
 def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optional[float] = None) -> int:
-    """Добавляет сигнал и возвращает его ID."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -213,10 +212,6 @@ def add_signal_recipient_sync(signal_id: int, user_id: int):
     conn.close()
 
 def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
-    """
-    Обновляет результаты открытых сигналов.
-    Возвращает список закрытых сигналов с их ID и результатом.
-    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -227,11 +222,10 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
     rows = c.fetchall()
     now = int(time.time())
     updated = False
-    closed_signals = []  # (signal_id, result, exit_price, pips)
+    closed_signals = []
     for row in rows:
         signal_id, ts, entry, direction, tp, sl, features_json = row
         if now - ts > 3600:
-            # Тайм-аут
             c.execute('''
                 UPDATE signals SET result = 'timeout', exit_price = ?, exit_time = ?
                 WHERE id = ?
@@ -274,7 +268,7 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     'pips': pips,
                     'features_json': features_json
                 })
-        else:  # sell
+        else:
             if tp and current_price <= tp:
                 c.execute('''
                     UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
@@ -305,9 +299,7 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                 })
     if updated:
         conn.commit()
-    # Если есть закрытые сигналы, создаём уведомления для получателей
     for cs in closed_signals:
-        # Находим всех получателей этого сигнала
         c.execute('SELECT user_id FROM signal_recipients WHERE signal_id = ?', (cs['signal_id'],))
         recipients = c.fetchall()
         for (user_id,) in recipients:
@@ -315,7 +307,6 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                 INSERT INTO pending_notifications (user_id, signal_id, result, exit_price, pips)
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, cs['signal_id'], cs['result'], cs['exit_price'], cs['pips']))
-        # Сохраняем для ML
         if cs['features_json']:
             try:
                 features = json.loads(cs['features_json'])
@@ -469,7 +460,6 @@ def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С УВЕДОМЛЕНИЯМИ ==========
 def get_pending_notifications_sync() -> List[Dict]:
-    """Возвращает все непрочитанные уведомления."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -583,7 +573,7 @@ async def train_model():
             return
         X = [json.loads(row[0]) for row in rows]
         y = [row[1] for row in rows]
-        ml_gen.train(X, y)  # метод train теперь возвращает метрики и сохраняет их
+        ml_gen.train(X, y)
     await asyncio.to_thread(_train)
 
 # ========== ГЛОБАЛЬНОЕ МНОЖЕСТВО ПОДПИСЧИКОВ И ЗАМОК ==========
@@ -621,7 +611,7 @@ class MLSignalGenerator:
     def __init__(self, model_path='model.json', model_type='xgb'):
         self.model = None
         self.model_path = model_path
-        self.model_type = model_type  # 'xgb' или 'rf'
+        self.model_type = model_type
         self.load_model()
 
     def load_model(self):
@@ -654,7 +644,6 @@ class MLSignalGenerator:
                 joblib.dump(self.model, self.model_path)
 
     def prepare_features(self, ind: Dict) -> List[float]:
-        # Базовые признаки
         features = [
             ind.get('rsi', 50),
             ind.get('macd', 0),
@@ -672,9 +661,9 @@ class MLSignalGenerator:
             ind.get('adx', 0),
             ind.get('plus_di', 0),
             ind.get('minus_di', 0),
-            ind.get('hour', 0),           # час
-            ind.get('weekday', 0),         # день недели
-            ind.get('norm_volume', 0),     # нормализованный объём
+            ind.get('hour', 0),
+            ind.get('weekday', 0),
+            ind.get('norm_volume', 0),
         ]
         return features
 
@@ -682,7 +671,6 @@ class MLSignalGenerator:
         if self.model is None:
             return 0.5
         try:
-            # Для XGBoost проверяем, есть ли обученный бустер
             if self.model_type == 'xgb':
                 _ = self.model.get_booster()
             else:
@@ -693,15 +681,12 @@ class MLSignalGenerator:
             proba = self.model.predict_proba(X)[0]
             return proba[1] if len(proba) > 1 else proba[0]
         except Exception:
-            # Молча возвращаем 0.5, не засоряя логи
             return 0.5
 
     def train(self, X: List[List[float]], y: List[int]):
-        # Разделяем на обучающую и тестовую выборки (80/20)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         self.model.fit(X_train, y_train)
         self.save_model()
-        # Оцениваем качество
         y_pred = self.model.predict(X_test)
         metrics = {
             'accuracy': accuracy_score(y_test, y_pred),
@@ -709,7 +694,6 @@ class MLSignalGenerator:
             'recall': recall_score(y_test, y_pred, zero_division=0),
             'f1': f1_score(y_test, y_pred, zero_division=0)
         }
-        # Сохраняем метрики в БД
         save_model_metrics_sync(metrics)
         logger.info(f"ML model trained. Metrics: {metrics}")
         return metrics
@@ -1310,11 +1294,9 @@ async def get_indicators(symbol: str) -> Optional[Dict]:
             ind['prob_down'] = 50 - ind['ml_score'] / 2
         ind['confidence'] = abs(ind['ml_score'])
 
-        # Добавляем новые признаки для ML
         now = datetime.now()
         ind['hour'] = now.hour
         ind['weekday'] = now.weekday()
-        # Нормализованный объём
         if len(storage.volumes) >= 20:
             avg_volume = np.mean(storage.volumes[-20:])
             if avg_volume != 0:
@@ -1403,6 +1385,54 @@ def main_menu():
          InlineKeyboardButton("⏹️ Стоп", callback_data='auto_off')],
     ]
     return InlineKeyboardMarkup(kb)
+
+# ========== ВЕБ-ПАНЕЛЬ СТАТИСТИКИ ==========
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/api/stats')
+def api_stats():
+    summary = get_summary_sync()
+    pairs_stats = {}
+    for symbol in SYMBOLS:
+        pairs_stats[symbol] = get_summary_sync(symbol)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT timestamp, symbol, direction, price, tp, sl, result, exit_price, exit_time,
+               (CASE 
+                   WHEN result = 'profit' AND direction = 'buy' THEN (exit_price - price) * 10000
+                   WHEN result = 'profit' AND direction = 'sell' THEN (price - exit_price) * 10000
+                   WHEN result = 'loss' AND direction = 'buy' THEN (exit_price - price) * 10000
+                   WHEN result = 'loss' AND direction = 'sell' THEN (price - exit_price) * 10000
+                   ELSE NULL
+                END) as pips
+        FROM signals
+        ORDER BY timestamp DESC
+        LIMIT 50
+    ''')
+    recent_signals = []
+    for row in c.fetchall():
+        recent_signals.append({
+            'timestamp': row[0],
+            'symbol': row[1],
+            'direction': row[2],
+            'price': row[3],
+            'tp': row[4],
+            'sl': row[5],
+            'result': row[6],
+            'exit_price': row[7],
+            'exit_time': row[8],
+            'pips': row[9]
+        })
+    conn.close()
+    return jsonify({
+        'summary': summary,
+        'pairs': pairs_stats,
+        'recent': recent_signals
+    })
 
 # ========== ОБРАБОТЧИКИ ==========
 @app.before_request
@@ -1566,7 +1596,7 @@ async def auto_worker():
             pass
     while True:
         try:
-            await asyncio.sleep(600)  # 10 минут
+            await asyncio.sleep(600)
             subs = await asyncio.to_thread(get_subscribers_sync)
             if not subs:
                 logger.info("😴 Нет подписчиков, пропускаем рассылку")
@@ -1581,7 +1611,6 @@ async def auto_worker():
                         price_storages[symbol].add_candle(new_candle)
                         current_price = float(new_candle['close'])
                         logger.info(f"✅ {symbol}: новая свеча {new_candle.get('datetime')} = {current_price}")
-                        # Обновляем результаты и получаем закрытые сигналы
                         closed_signals = await asyncio.to_thread(update_signal_results_sync, symbol, current_price)
                     else:
                         logger.warning(f"⚠️ {symbol}: не удалось получить свечу")
@@ -1625,7 +1654,6 @@ async def auto_worker():
                                 }
                                 features = ml_gen.prepare_features(ind)
                                 signal_id = await asyncio.to_thread(add_signal_sync, signal_record, features, spread)
-                                # Записываем получателя
                                 await asyncio.to_thread(add_signal_recipient_sync, signal_id, uid)
                                 await bot.send_message(uid, generate_message(ind, symbol, warning), parse_mode='Markdown')
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
@@ -1647,9 +1675,8 @@ async def auto_worker():
                     except:
                         pass
 
-            # Раз в минуту отправляем накопившиеся уведомления
             await send_pending_notifications()
-            await asyncio.sleep(60)  # маленькая пауза для уведомлений
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"❌ Критическая ошибка в auto_worker: {e}")
             try:
@@ -1660,12 +1687,10 @@ async def auto_worker():
             await asyncio.sleep(10)
 
 async def send_pending_notifications():
-    """Отправляет все ожидающие уведомления пользователям."""
     notifs = await asyncio.to_thread(get_pending_notifications_sync)
     for n in notifs:
         try:
             bot = Bot(token=BOT_TOKEN)
-            # Формируем сообщение
             result_emoji = "✅" if n['result'] == 'profit' else "❌" if n['result'] == 'loss' else "⏳"
             msg = f"{result_emoji} *Сигнал #{n['signal_id']} закрыт*\nРезультат: {n['result']}\n"
             if n['exit_price']:
@@ -1673,7 +1698,6 @@ async def send_pending_notifications():
             if n['pips']:
                 msg += f"Прибыль: {n['pips']:.1f} пипсов"
             await bot.send_message(n['user_id'], msg, parse_mode='Markdown')
-            # Удаляем уведомление после отправки
             await asyncio.to_thread(delete_notification_sync, n['id'])
             logger.info(f"📨 Уведомление о сигнале {n['signal_id']} отправлено пользователю {n['user_id']}")
         except Exception as e:
