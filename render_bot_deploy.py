@@ -39,8 +39,6 @@ if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 if not ADMIN_CHAT_ID:
     logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
-if not DASHBOARD_PASSWORD:
-    logger.warning("⚠️ DASHBOARD_PASSWORD не задан. Веб-панель будет доступна без пароля!")
 
 # ========== ОСНОВНЫЕ ВАЛЮТНЫЕ ПАРЫ (5 шт) ==========
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
