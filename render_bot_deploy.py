@@ -18,6 +18,42 @@ from sklearn.model_selection import train_test_split
 import xgboost as xgb
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from functools import wraps
+import json
+import os
+
+STATS_FILE = "stats.json"
+
+def load_stats():
+    """Загружает статистику из файла. Если файла нет, возвращает пустой словарь."""
+    if not os.path.exists(STATS_FILE):
+        return {}
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        # Если файл повреждён или не читается, начинаем с нуля
+        return {}
+
+def save_stats(stats):
+    """Сохраняет статистику в файл."""
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=4)
+    except IOError:
+        print("Ошибка записи в файл статистики")
+
+def increment_stat(user_id):
+    """Увеличивает счётчик для пользователя и сохраняет в файл."""
+    stats = load_stats()
+    user_id_str = str(user_id)  # ID храним как строку
+    stats[user_id_str] = stats.get(user_id_str, 0) + 1
+    save_stats(stats)
+    return stats[user_id_str]
+
+def get_stat(user_id):
+    """Возвращает текущее значение статистики для пользователя."""
+    stats = load_stats()
+    return stats.get(str(user_id), 0)
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
