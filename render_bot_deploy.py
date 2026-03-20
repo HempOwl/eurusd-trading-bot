@@ -1618,7 +1618,7 @@ async def auto_worker():
                         try:
                             bot = Bot(token=BOT_TOKEN)
                             ind = await get_indicators(symbol)
-                            if ind and ind.get('confidence', 0) >= 49.9:
+                            if ind and ind.get('confidence', 0) >= 1.22:
                                 has_risk, events = await economic_calendar.check_symbol_risk(symbol)
                                 warning = None
                                 if has_risk:
@@ -1657,7 +1657,7 @@ async def auto_worker():
                                 logger.info(f"✅ {symbol} сигнал отправлен {uid}")
                             else:
                                 conf = ind.get('confidence', 0) if ind else 0
-                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 49.9)")
+                                logger.info(f"📉 {symbol} сигнал для {uid} пропущен (уверенность {conf:.1f}% < 1.22)")
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки для {uid} по {symbol}: {e}")
                             try:
