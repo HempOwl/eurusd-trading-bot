@@ -24,36 +24,66 @@ import os
 STATS_FILE = "stats.json"
 
 def load_stats():
-    """Загружает статистику из файла. Если файла нет, возвращает пустой словарь."""
     if not os.path.exists(STATS_FILE):
-        return {}
-    try:
-        with open(STATS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        # Если файл повреждён или не читается, начинаем с нуля
-        return {}
+        return {
+            "total_signals": 0,
+            "profitable": 0,
+            "lossy": 0,
+            "expired": 0,
+            "unknown": 0,
+            "winrate": 0.0,
+            "avg_profit": 0.0,
+            "avg_loss": 0.0,
+            "total_profit": 0.0,
+            "total_loss": 0.0,
+            "net_result": 0.0,
+            "model_trained": False,
+            "history": []
+        }
+    with open(STATS_FILE, "r") as f:
+        return json.load(f)
 
 def save_stats(stats):
-    """Сохраняет статистику в файл."""
-    try:
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=4)
-    except IOError:
-        print("Ошибка записи в файл статистики")
+    with open(STATS_FILE, "w") as f:
+        json.dump(stats, f, indent=4, ensure_ascii=False)
 
-def increment_stat(user_id):
-    """Увеличивает счётчик для пользователя и сохраняет в файл."""
+def add_signal(signal_type, value):
     stats = load_stats()
-    user_id_str = str(user_id)  # ID храним как строку
-    stats[user_id_str] = stats.get(user_id_str, 0) + 1
+    stats["total_signals"] += 1
+
+    if signal_type == "profitable":
+        stats["profitable"] += 1
+        stats["total_profit"] += value
+    elif signal_type == "lossy":
+        stats["lossy"] += 1
+        stats["total_loss"] += value
+    elif signal_type == "expired":
+        stats["expired"] += 1
+    else:
+        stats["unknown"] += 1
+
+    # пересчёт метрик
+    if stats["profitable"] + stats["lossy"] > 0:
+        stats["winrate"] = stats["profitable"] / (stats["profitable"] + stats["lossy"]) * 100
+    if stats["profitable"] > 0:
+        stats["avg_profit"] = stats["total_profit"] / stats["profitable"]
+    if stats["lossy"] > 0:
+        stats["avg_loss"] = stats["total_loss"] / stats["lossy"]
+    stats["net_result"] = stats["total_profit"] - stats["total_loss"]
+
+    # модель обучается после 100 сделок (можно настроить)
+    if stats["total_signals"] >= 100:
+        stats["model_trained"] = True
+
+    # добавить в историю (опционально)
+    stats["history"].append({
+        "timestamp": datetime.now().isoformat(),
+        "type": signal_type,
+        "value": value
+    })
+
     save_stats(stats)
-    return stats[user_id_str]
-
-def get_stat(user_id):
-    """Возвращает текущее значение статистики для пользователя."""
-    stats = load_stats()
-    return stats.get(str(user_id), 0)
+    return stats
 
 # ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -235,6 +265,14 @@ def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optio
     signal_id = c.lastrowid
     conn.commit()
     conn.close()
+
+    # ===== ДОБАВЛЯЕМ ЗАПИСЬ В JSON С ТИПОМ 'unknown' =====
+    try:
+        add_signal('unknown', 0.0)
+        logger.info(f"📝 JSON: добавлен сигнал unknown (id={signal_id})")
+    except Exception as e:
+        logger.error(f"❌ Ошибка записи в JSON при создании сигнала: {e}")
+
     return signal_id
 
 def add_signal_recipient_sync(signal_id: int, user_id: int):
@@ -265,13 +303,20 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                 WHERE id = ?
             ''', (current_price, now, signal_id))
             updated = True
+            pips = 0
             closed_signals.append({
                 'signal_id': signal_id,
                 'result': 'timeout',
                 'exit_price': current_price,
-                'pips': 0,
+                'pips': pips,
                 'features_json': features_json
             })
+            # ===== ДОБАВЛЯЕМ В JSON =====
+            try:
+                add_signal('expired', pips)
+                logger.info(f"📝 JSON: добавлен сигнал expired (id={signal_id})")
+            except Exception as e:
+                logger.error(f"❌ Ошибка записи в JSON для истёкшего сигнала: {e}")
             continue
         if direction == 'buy':
             if tp and current_price >= tp:
@@ -288,6 +333,12 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     'pips': pips,
                     'features_json': features_json
                 })
+                # ===== ДОБАВЛЯЕМ В JSON =====
+                try:
+                    add_signal('profitable', pips)
+                    logger.info(f"📝 JSON: добавлен сигнал profitable (id={signal_id})")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка записи в JSON для прибыльного сигнала: {e}")
             elif sl and current_price <= sl:
                 c.execute('''
                     UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
@@ -302,7 +353,13 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     'pips': pips,
                     'features_json': features_json
                 })
-        else:
+                # ===== ДОБАВЛЯЕМ В JSON =====
+                try:
+                    add_signal('lossy', pips)
+                    logger.info(f"📝 JSON: добавлен сигнал lossy (id={signal_id})")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка записи в JSON для убыточного сигнала: {e}")
+        else:  # sell
             if tp and current_price <= tp:
                 c.execute('''
                     UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
@@ -317,6 +374,11 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     'pips': pips,
                     'features_json': features_json
                 })
+                try:
+                    add_signal('profitable', pips)
+                    logger.info(f"📝 JSON: добавлен сигнал profitable (id={signal_id})")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка записи в JSON для прибыльного сигнала: {e}")
             elif sl and current_price >= sl:
                 c.execute('''
                     UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
@@ -331,6 +393,11 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     'pips': pips,
                     'features_json': features_json
                 })
+                try:
+                    add_signal('lossy', pips)
+                    logger.info(f"📝 JSON: добавлен сигнал lossy (id={signal_id})")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка записи в JSON для убыточного сигнала: {e}")
     if updated:
         conn.commit()
     for cs in closed_signals:
@@ -602,7 +669,7 @@ async def train_model():
         c.execute('SELECT features, result FROM ml_training_data')
         rows = c.fetchall()
         conn.close()
-        if len(rows) < 100:
+        if len(rows) < 5:
             logger.info("Not enough training data yet")
             return
         X = [json.loads(row[0]) for row in rows]
@@ -1582,27 +1649,35 @@ async def send_status(bot, chat_id):
     await bot.send_message(chat_id, f"📊 Статус:\nАвтосигналы: {auto}\nОтслеживаемые пары: {', '.join(SYMBOLS)}")
 
 async def send_stats(bot, chat_id):
-    summary = await asyncio.to_thread(get_summary_sync)
-    logger.info(f"📊 Статистика запрошена: всего сигналов = {summary['total']}")
-    if summary['total'] == 0:
-        await bot.send_message(chat_id, "📊 Статистика пока пуста.")
-        return
-    text = f"""📊 *Статистика сигналов*
+    """Отправляет статистику из JSON-файла"""
+    try:
+        stats = load_stats()  # загружаем словарь из stats.json
 
-Всего сигналов: {summary['total']}
-✅ Прибыльных: {summary['profit']}
-❌ Убыточных: {summary['loss']}
-⏳ Истекло: {summary['timeout']}
-❓ Неизвестно: {summary['unknown']}
+        if stats['total_signals'] == 0:
+            await bot.send_message(chat_id, "📊 Статистика пока пуста.")
+            return
 
-📈 Винрейт: {summary['win_rate']:.1f}%
-💰 Средняя прибыль: {summary['avg_profit']:.1f} пипсов
-📉 Средний убыток: {summary['avg_loss']:.1f} пипсов
-💵 Общая прибыль: {summary['total_profit_pips']:.1f} пипсов
-💸 Общий убыток: {summary['total_loss_pips']:.1f} пипсов
-📊 Чистый результат: {summary['total_profit_pips'] - summary['total_loss_pips']:.1f} пипсов
+        text = f"""📊 *Статистика сигналов*
+
+Всего сигналов: {stats['total_signals']}
+✅ Прибыльных: {stats['profitable']}
+❌ Убыточных: {stats['lossy']}
+⏳ Истекло: {stats['expired']}
+❓ Неизвестно: {stats['unknown']}
+
+📈 Винрейт: {stats['winrate']:.1f}%
+💰 Средняя прибыль: {stats['avg_profit']:.1f} пипсов
+📉 Средний убыток: {stats['avg_loss']:.1f} пипсов
+💵 Общая прибыль: {stats['total_profit']:.1f} пипсов
+💸 Общий убыток: {stats['total_loss']:.1f} пипсов
+📊 Чистый результат: {stats['net_result']:.1f} пипсов
 """
-    await bot.send_message(chat_id, text, parse_mode='Markdown')
+        await bot.send_message(chat_id, text, parse_mode='Markdown')
+        logger.info(f"📊 Статистика (JSON) отправлена пользователю {chat_id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка при чтении stats.json: {e}")
+        await bot.send_message(chat_id, "⚠️ Не удалось загрузить статистику. Обратитесь к администратору.")
 
 async def send_model_stats(bot, chat_id):
     metrics = await asyncio.to_thread(get_latest_metrics_sync)
