@@ -9,7 +9,8 @@ import time
 import pytz
 from typing import List, Dict, Optional, Set, Any
 import threading
-import sqlite3
+import psycopg2
+from urllib.parse import urlparse
 import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -98,6 +99,7 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 TWELVE_API_KEY = os.environ.get('TWELVE_API_KEY')
 ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID')
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не задан!")
@@ -105,12 +107,13 @@ if not TWELVE_API_KEY:
     logger.error("❌ TWELVE_API_KEY не задан!")
 if not ADMIN_CHAT_ID:
     logger.warning("⚠️ ADMIN_CHAT_ID не задан. Уведомления админу отключены.")
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL не задан! Используйте Supabase или Render PostgreSQL.")
+else:
+    logger.info("✅ DATABASE_URL получен")
 
 # ========== ОСНОВНЫЕ ВАЛЮТНЫЕ ПАРЫ (5 шт) ==========
 SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']
-
-# ========== ПУТЬ К БАЗЕ ДАННЫХ ==========
-DB_PATH = os.path.join(os.path.dirname(__file__), "bot.db")
 
 # ========== ГЛОБАЛЬНЫЙ СЧЁТЧИК ОШИБОК API ==========
 api_errors = {}
@@ -128,17 +131,17 @@ async def notify_admin(bot: Bot, message: str):
 
 # ========== СИНХРОННАЯ ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ (С НОВЫМИ ТАБЛИЦАМИ) ==========
 def init_db_sync():
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS subscribers (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             timestamp INTEGER NOT NULL,
             symbol TEXT NOT NULL,
             price REAL NOT NULL,
@@ -175,7 +178,7 @@ def init_db_sync():
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS ml_training_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             features TEXT NOT NULL,
             result INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -184,14 +187,14 @@ def init_db_sync():
     c.execute('''
         CREATE TABLE IF NOT EXISTS signal_recipients (
             signal_id INTEGER,
-            user_id INTEGER,
+            user_id BIGINT,
             PRIMARY KEY (signal_id, user_id)
         )
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS pending_notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
             signal_id INTEGER NOT NULL,
             result TEXT NOT NULL,
             exit_price REAL,
@@ -201,7 +204,7 @@ def init_db_sync():
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS model_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             accuracy REAL,
             precision REAL,
             recall REAL,
@@ -214,11 +217,11 @@ def init_db_sync():
     c.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user ON pending_notifications(user_id)')
     conn.commit()
     conn.close()
-    logger.info("✅ База данных инициализирована (с новыми таблицами)")
+    logger.info("✅ База данных PostgreSQL инициализирована")
 
 # ========== СИНХРОННЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С БД ==========
 def get_subscribers_sync() -> Set[int]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('SELECT user_id FROM subscribers')
     rows = c.fetchall()
@@ -226,29 +229,30 @@ def get_subscribers_sync() -> Set[int]:
     return {row[0] for row in rows}
 
 def add_subscriber_sync(user_id: int) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)', (user_id,))
+    c.execute('INSERT INTO subscribers (user_id) VALUES (%s) ON CONFLICT DO NOTHING', (user_id,))
     added = c.rowcount > 0
     conn.commit()
     conn.close()
     return added
 
 def remove_subscriber_sync(user_id: int) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute('DELETE FROM subscribers WHERE user_id = ?', (user_id,))
+    c.execute('DELETE FROM subscribers WHERE user_id = %s', (user_id,))
     removed = c.rowcount > 0
     conn.commit()
     conn.close()
     return removed
 
 def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optional[float] = None) -> int:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         INSERT INTO signals (timestamp, symbol, price, direction, tp, sl, spread, result, exit_price, exit_time, features)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
     ''', (
         signal['timestamp'],
         signal['symbol'],
@@ -262,7 +266,7 @@ def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optio
         signal.get('exit_time'),
         json.dumps(features) if features else None
     ))
-    signal_id = c.lastrowid
+    signal_id = c.fetchone()[0]
     conn.commit()
     conn.close()
 
@@ -276,20 +280,20 @@ def add_signal_sync(signal: Dict, features: Optional[List] = None, spread: Optio
     return signal_id
 
 def add_signal_recipient_sync(signal_id: int, user_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute('INSERT OR IGNORE INTO signal_recipients (signal_id, user_id) VALUES (?, ?)',
+    c.execute('INSERT INTO signal_recipients (signal_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING',
               (signal_id, user_id))
     conn.commit()
     conn.close()
 
 def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         SELECT id, timestamp, price, direction, tp, sl, features
         FROM signals
-        WHERE symbol = ? AND result IS NULL
+        WHERE symbol = %s AND result IS NULL
     ''', (symbol,))
     rows = c.fetchall()
     now = int(time.time())
@@ -299,8 +303,8 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
         signal_id, ts, entry, direction, tp, sl, features_json = row
         if now - ts > 3600:
             c.execute('''
-                UPDATE signals SET result = 'timeout', exit_price = ?, exit_time = ?
-                WHERE id = ?
+                UPDATE signals SET result = 'timeout', exit_price = %s, exit_time = %s
+                WHERE id = %s
             ''', (current_price, now, signal_id))
             updated = True
             pips = 0
@@ -321,8 +325,8 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
         if direction == 'buy':
             if tp and current_price >= tp:
                 c.execute('''
-                    UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
-                    WHERE id = ?
+                    UPDATE signals SET result = 'profit', exit_price = %s, exit_time = %s
+                    WHERE id = %s
                 ''', (tp, now, signal_id))
                 updated = True
                 pips = (tp - entry) * 10000
@@ -341,8 +345,8 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     logger.error(f"❌ Ошибка записи в JSON для прибыльного сигнала: {e}")
             elif sl and current_price <= sl:
                 c.execute('''
-                    UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
-                    WHERE id = ?
+                    UPDATE signals SET result = 'loss', exit_price = %s, exit_time = %s
+                    WHERE id = %s
                 ''', (sl, now, signal_id))
                 updated = True
                 pips = (sl - entry) * 10000
@@ -362,8 +366,8 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
         else:  # sell
             if tp and current_price <= tp:
                 c.execute('''
-                    UPDATE signals SET result = 'profit', exit_price = ?, exit_time = ?
-                    WHERE id = ?
+                    UPDATE signals SET result = 'profit', exit_price = %s, exit_time = %s
+                    WHERE id = %s
                 ''', (tp, now, signal_id))
                 updated = True
                 pips = (entry - tp) * 10000
@@ -381,8 +385,8 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
                     logger.error(f"❌ Ошибка записи в JSON для прибыльного сигнала: {e}")
             elif sl and current_price >= sl:
                 c.execute('''
-                    UPDATE signals SET result = 'loss', exit_price = ?, exit_time = ?
-                    WHERE id = ?
+                    UPDATE signals SET result = 'loss', exit_price = %s, exit_time = %s
+                    WHERE id = %s
                 ''', (sl, now, signal_id))
                 updated = True
                 pips = (entry - sl) * 10000
@@ -401,18 +405,18 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
     if updated:
         conn.commit()
     for cs in closed_signals:
-        c.execute('SELECT user_id FROM signal_recipients WHERE signal_id = ?', (cs['signal_id'],))
+        c.execute('SELECT user_id FROM signal_recipients WHERE signal_id = %s', (cs['signal_id'],))
         recipients = c.fetchall()
         for (user_id,) in recipients:
             c.execute('''
                 INSERT INTO pending_notifications (user_id, signal_id, result, exit_price, pips)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (user_id, cs['signal_id'], cs['result'], cs['exit_price'], cs['pips']))
         if cs['features_json']:
             try:
                 features = json.loads(cs['features_json'])
                 result_int = 1 if cs['result'] == 'profit' else 0
-                c.execute('INSERT INTO ml_training_data (features, result) VALUES (?, ?)',
+                c.execute('INSERT INTO ml_training_data (features, result) VALUES (%s, %s)',
                           (json.dumps(features), result_int))
             except:
                 pass
@@ -422,10 +426,10 @@ def update_signal_results_sync(symbol: str, current_price: float) -> List[Dict]:
     return closed_signals
 
 def get_summary_sync(symbol: Optional[str] = None) -> Dict:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     if symbol:
-        c.execute('SELECT COUNT(*) FROM signals WHERE symbol = ?', (symbol,))
+        c.execute('SELECT COUNT(*) FROM signals WHERE symbol = %s', (symbol,))
     else:
         c.execute('SELECT COUNT(*) FROM signals')
     total = c.fetchone()[0]
@@ -443,7 +447,7 @@ def get_summary_sync(symbol: Optional[str] = None) -> Dict:
                 COUNT(*) FILTER (WHERE result = 'loss'),
                 COUNT(*) FILTER (WHERE result = 'timeout'),
                 COUNT(*) FILTER (WHERE result IS NULL)
-            FROM signals WHERE symbol = ?
+            FROM signals WHERE symbol = %s
         ''', (symbol,))
     else:
         c.execute('''
@@ -473,7 +477,7 @@ def get_summary_sync(symbol: Optional[str] = None) -> Dict:
                     END
                 ), 0)
             FROM signals
-            WHERE result IN ('profit', 'loss') AND symbol = ?
+            WHERE result IN ('profit', 'loss') AND symbol = %s
         ''', (symbol,))
     else:
         c.execute('''
@@ -514,14 +518,14 @@ def get_summary_sync(symbol: Optional[str] = None) -> Dict:
     }
 
 def get_cached_candles_sync(symbol: str, needed_bars: int = 200) -> Optional[List[Dict]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         SELECT datetime, open, high, low, close, volume
         FROM candles
-        WHERE symbol = ?
+        WHERE symbol = %s
         ORDER BY datetime DESC
-        LIMIT ?
+        LIMIT %s
     ''', (symbol, needed_bars))
     rows = c.fetchall()
     conn.close()
@@ -541,12 +545,19 @@ def get_cached_candles_sync(symbol: str, needed_bars: int = 200) -> Optional[Lis
     return candles
 
 def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     for candle in candles:
         c.execute('''
-            INSERT OR REPLACE INTO candles (symbol, datetime, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO candles (symbol, datetime, open, high, low, close, volume)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, datetime) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                updated_at = CURRENT_TIMESTAMP
         ''', (
             symbol,
             candle['datetime'],
@@ -561,7 +572,7 @@ def save_candles_to_cache_sync(symbol: str, candles: List[Dict]):
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С УВЕДОМЛЕНИЯМИ ==========
 def get_pending_notifications_sync() -> List[Dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         SELECT id, user_id, signal_id, result, exit_price, pips
@@ -577,27 +588,30 @@ def get_pending_notifications_sync() -> List[Dict]:
     ]
 
 def delete_notification_sync(notif_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute('DELETE FROM pending_notifications WHERE id = ?', (notif_id,))
+    c.execute('DELETE FROM pending_notifications WHERE id = %s', (notif_id,))
     conn.commit()
     conn.close()
 
 # ========== НОВЫЕ ФУНКЦИИ ДЛЯ КЭШИРОВАНИЯ ИНДИКАТОРОВ ==========
 def save_indicators_cache_sync(symbol: str, indicators: Dict):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
-        INSERT OR REPLACE INTO indicators_cache (symbol, timestamp, indicators)
-        VALUES (?, ?, ?)
+        INSERT INTO indicators_cache (symbol, timestamp, indicators)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (symbol) DO UPDATE SET
+            timestamp = EXCLUDED.timestamp,
+            indicators = EXCLUDED.indicators
     ''', (symbol, int(time.time()), json.dumps(indicators)))
     conn.commit()
     conn.close()
 
 def load_indicators_cache_sync(symbol: str, max_age: int = 60) -> Optional[Dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute('SELECT timestamp, indicators FROM indicators_cache WHERE symbol = ?', (symbol,))
+    c.execute('SELECT timestamp, indicators FROM indicators_cache WHERE symbol = %s', (symbol,))
     row = c.fetchone()
     conn.close()
     if row:
@@ -626,17 +640,17 @@ async def fetch_spread(symbol: str, api_key: str) -> Optional[float]:
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С МЕТРИКАМИ МОДЕЛИ ==========
 def save_model_metrics_sync(metrics: Dict):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         INSERT INTO model_metrics (accuracy, precision, recall, f1, timestamp)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
     ''', (metrics['accuracy'], metrics['precision'], metrics['recall'], metrics['f1'], int(time.time())))
     conn.commit()
     conn.close()
 
 def get_latest_metrics_sync() -> Optional[Dict]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         SELECT accuracy, precision, recall, f1, timestamp
@@ -664,7 +678,7 @@ async def train_model_periodically():
 
 async def train_model():
     def _train():
-        conn = sqlite3.connect(DB_PATH)
+        conn = psycopg2.connect(DATABASE_URL)
         c = conn.cursor()
         c.execute('SELECT features, result FROM ml_training_data')
         rows = c.fetchall()
@@ -745,43 +759,69 @@ class MLSignalGenerator:
                 joblib.dump(self.model, self.model_path)
 
     def prepare_features(self, ind: Dict) -> List[float]:
-        features = [
-            ind.get('rsi', 50),
-            ind.get('macd', 0),
-            (ind.get('price', 1) - ind.get('bb_lower', 0)) / (ind.get('bb_upper', 2) - ind.get('bb_lower', 1))
-            if (ind.get('bb_upper', 2) - ind.get('bb_lower', 1)) != 0 else 0.5,
-            ind.get('sma', {}).get(5, 0),
-            ind.get('sma', {}).get(10, 0),
-            ind.get('sma', {}).get(20, 0),
-            ind.get('ema', {}).get(5, 0),
-            ind.get('ema', {}).get(10, 0),
-            ind.get('ema', {}).get(20, 0),
-            ind.get('atr', 0),
-            ind.get('obv', 0),
-            ind.get('stoch_k', 50),
-            ind.get('adx', 0),
-            ind.get('plus_di', 0),
-            ind.get('minus_di', 0),
-            ind.get('hour', 0),
-            ind.get('weekday', 0),
-            ind.get('norm_volume', 0),
-        ]
-        return features
+        """Извлекает признаки из словаря индикаторов, приводя всё к float."""
+        try:
+            # Функция-помощник для безопасного извлечения числа
+            def safe_get(d, *keys, default=0.0):
+                val = d
+                for key in keys:
+                    if isinstance(val, dict):
+                        val = val.get(key, default)
+                    else:
+                        return default
+                # Приводим к float, если это число
+                try:
+                    return float(val) if val is not None else default
+                except (TypeError, ValueError):
+                    return default
+
+            features = [
+                safe_get(ind, 'rsi', default=50.0),
+                safe_get(ind, 'macd', default=0.0),
+                # (price - bb_lower) / (bb_upper - bb_lower) с защитой от деления на ноль
+                (safe_get(ind, 'price', default=1.0) - safe_get(ind, 'bb_lower', default=0.0)) /
+                (safe_get(ind, 'bb_upper', default=2.0) - safe_get(ind, 'bb_lower', default=1.0))
+                if (safe_get(ind, 'bb_upper', default=2.0) - safe_get(ind, 'bb_lower', default=1.0)) != 0 else 0.5,
+                safe_get(ind, 'sma', 5, default=0.0),
+                safe_get(ind, 'sma', 10, default=0.0),
+                safe_get(ind, 'sma', 20, default=0.0),
+                safe_get(ind, 'ema', 5, default=0.0),
+                safe_get(ind, 'ema', 10, default=0.0),
+                safe_get(ind, 'ema', 20, default=0.0),
+                safe_get(ind, 'atr', default=0.0),
+                safe_get(ind, 'obv', default=0.0),
+                safe_get(ind, 'stoch_k', default=50.0),
+                safe_get(ind, 'adx', default=0.0),
+                safe_get(ind, 'plus_di', default=0.0),
+                safe_get(ind, 'minus_di', default=0.0),
+                safe_get(ind, 'hour', default=0),
+                safe_get(ind, 'weekday', default=0),
+                safe_get(ind, 'norm_volume', default=0.0),
+            ]
+            # Дополнительная проверка: все элементы должны быть числами
+            for i, f in enumerate(features):
+                if not isinstance(f, (int, float)):
+                    logger.warning(f"Признак {i} имеет тип {type(f)} = {f}, заменяем на 0")
+                    features[i] = 0.0
+            return features
+        except Exception as e:
+            logger.error(f"Ошибка в prepare_features: {e}, ind keys: {ind.keys() if ind else None}")
+            # Возвращаем нулевой вектор признаков
+            return [0.0] * 19
 
     def predict(self, ind: Dict) -> float:
         if self.model is None:
             return 0.5
         try:
-            if self.model_type == 'xgb':
-                _ = self.model.get_booster()
-            else:
-                if not hasattr(self.model, 'estimators_'):
-                    return 0.5
             features = self.prepare_features(ind)
-            X = np.array(features).reshape(1, -1)
+            X = np.array(features, dtype=np.float32).reshape(1, -1)
             proba = self.model.predict_proba(X)[0]
-            return proba[1] if len(proba) > 1 else proba[0]
-        except Exception:
+            return float(proba[1]) if len(proba) > 1 else float(proba[0])
+        except Exception as e:
+            logger.error(f"Ошибка в predict: {e}")
+            # Логируем первые 5 признаков для отладки
+            if 'features' in locals():
+                logger.error(f"Первые 5 признаков: {features[:5]}")
             return 0.5
 
     def train(self, X: List[List[float]], y: List[int]):
@@ -1499,7 +1539,7 @@ def api_stats():
     for symbol in SYMBOLS:
         pairs_stats[symbol] = get_summary_sync(symbol)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''
         SELECT timestamp, symbol, direction, price, tp, sl, result, exit_price, exit_time,
@@ -1643,14 +1683,14 @@ async def handle_message(chat_id, text):
     elif text == '/force_train':
         if str(chat_id) == ADMIN_CHAT_ID:
             import random
-            conn = sqlite3.connect(DB_PATH)
+            conn = psycopg2.connect(DATABASE_URL)
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM ml_training_data")
             count = c.fetchone()[0]
             if count < 5:
                 for _ in range(5):
                     fake_features = [random.random() for _ in range(19)]
-                    c.execute("INSERT INTO ml_training_data (features, result) VALUES (?, ?)",
+                    c.execute("INSERT INTO ml_training_data (features, result) VALUES (%s, %s)",
                               (json.dumps(fake_features), random.choice([0, 1])))
                 conn.commit()
                 await bot.send_message(chat_id, "➕ Добавлено 5 тестовых записей в обучающую выборку.")
