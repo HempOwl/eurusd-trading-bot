@@ -1640,33 +1640,29 @@ async def handle_message(chat_id, text):
             await bot.send_message(chat_id, "ℹ️ Автосигналы не были включены")
     elif text == '/model_stats':
         await send_model_stats(bot, chat_id)
-    else:
-        await bot.send_message(chat_id, "❌ Неизвестная команда")
-
- elif text == '/force_train':
-        if str(chat_id) == ADMIN_CHAT_ID:  # только для админа
-            # Создаём тестовые данные, если их нет
+    elif text == '/force_train':
+        if str(chat_id) == ADMIN_CHAT_ID:
             import random
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM ml_training_data")
             count = c.fetchone()[0]
             if count < 5:
-                # Добавим 5 фейковых записей (чтобы проверить обучение)
                 for _ in range(5):
-                    fake_features = [random.random() for _ in range(19)]  # 19 фич, как в prepare_features
+                    fake_features = [random.random() for _ in range(19)]
                     c.execute("INSERT INTO ml_training_data (features, result) VALUES (?, ?)",
-                              (json.dumps(fake_features), random.choice([0,1])))
+                              (json.dumps(fake_features), random.choice([0, 1])))
                 conn.commit()
                 await bot.send_message(chat_id, "➕ Добавлено 5 тестовых записей в обучающую выборку.")
             else:
                 await bot.send_message(chat_id, f"📊 В выборке уже есть {count} записей.")
             conn.close()
-            # Запускаем обучение
             await train_model()
             await bot.send_message(chat_id, "🚀 Обучение запущено, проверьте логи.")
         else:
             await bot.send_message(chat_id, "⛔ Нет прав.")
+    else:
+        await bot.send_message(chat_id, "❌ Неизвестная команда")
 
 async def send_status(bot, chat_id):
     is_sub = await asyncio.to_thread(is_subscriber, chat_id)
